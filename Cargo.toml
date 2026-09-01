@@ -1,0 +1,17 @@
+[package]
+name = "cmux-axi"
+version = "0.1.0"
+edition = "2021"
+description = "AXI-compliant cmux CLI wrapper — token-efficient TOON output, idempotent crew-layout provisioning, contextual suggestions"
+license = "MIT"
+repository = "https://github.com/thalixinc/cmux-axi"
+keywords = ["axi", "cmux", "agent", "cli", "toon"]
+categories = ["command-line-utilities", "development-tools"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+strip = true
+lto = true
