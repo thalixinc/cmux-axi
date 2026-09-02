@@ -1,8 +1,8 @@
 //! Version + self-update for a `cargo install --git`-distributed binary.
 //!
 //! `version` prints the version. `update --check` compares against the version
-//! on the default branch; `update` reinstalls latest from the repo. Version
-//! identity lives in `Cargo.toml` (single source of truth).
+//! on the default branch; `update` reinstalls only when a newer version exists.
+//! Version identity lives in `Cargo.toml` (single source of truth).
 
 use crate::error::{CmuxError, Result};
 use crate::toon;
@@ -34,11 +34,19 @@ fn semver_cmp(a: &str, b: &str) -> Ordering {
     Ordering::Equal
 }
 
-/// Fetch the version string from the default branch's `Cargo.toml`.
+/// Fetch the version string from the default branch's `Cargo.toml` via the
+/// GitHub API (authoritative — the raw CDN lags for minutes after a push).
 fn fetch_latest_version() -> Result<String> {
-    let url = "https://raw.githubusercontent.com/thalixinc/cmux-axi/main/Cargo.toml";
+    let url = "https://api.github.com/repos/thalixinc/cmux-axi/contents/Cargo.toml";
     let out = Command::new("curl")
-        .args(["-fsSL", "--max-time", "10", url])
+        .args([
+            "-fsSL",
+            "--max-time",
+            "10",
+            "-H",
+            "Accept: application/vnd.github.raw+json",
+            url,
+        ])
         .output()
         .map_err(|e| {
             CmuxError::operational(format!("`curl` not available: {e}"), "UPDATE_CHECK")
@@ -70,33 +78,50 @@ pub fn cmd_update(check: bool, json: bool) -> Result<()> {
     let latest = fetch_latest_version()?;
     let available = semver_cmp(&latest, VERSION) == Ordering::Greater;
 
-    if json {
-        println!(
-            "{}",
-            serde_json::to_string(&serde_json::json!({
-                "package": "cmux-axi", "current": VERSION, "latest": latest, "available": available,
-            }))
-            .unwrap()
-        );
-    } else {
-        println!(
-            "{}",
-            toon::join(&[
-                format!("update:\n  package: cmux-axi\n  current: {VERSION}\n  latest: {latest}\n  available: {available}"),
-                if available {
-                    toon::help(&["Run `cmux-axi update` to upgrade".to_string()])
-                } else {
-                    toon::help(&["Already up to date".to_string()])
-                },
-            ])
-        );
-    }
-
+    // `update --check`: report current vs latest, install nothing.
     if check {
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string(&serde_json::json!({
+                    "package": "cmux-axi", "current": VERSION, "latest": latest, "available": available,
+                }))
+                .unwrap()
+            );
+        } else {
+            println!(
+                "{}",
+                toon::join(&[
+                    format!(
+                        "update:\n  package: cmux-axi\n  current: {VERSION}\n  latest: {latest}\n  available: {available}"
+                    ),
+                    if available {
+                        toon::help(&["Run `cmux-axi update` to upgrade".to_string()])
+                    } else {
+                        toon::help(&["Already up to date".to_string()])
+                    },
+                ])
+            );
+        }
         return Ok(());
     }
 
-    // Actually update: reinstall latest from the repo.
+    // `update`: reinstall only if a newer version exists.
+    if !available {
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string(&serde_json::json!({
+                    "ok": true, "action": "update", "current": VERSION, "latest": latest, "available": false,
+                }))
+                .unwrap()
+            );
+        } else {
+            println!("ok: cmux-axi already at latest ({VERSION})");
+        }
+        return Ok(());
+    }
+
     let status = Command::new("cargo")
         .args(["install", "--git", REPO, "--force"])
         .status()
@@ -108,10 +133,16 @@ pub fn cmd_update(check: bool, json: bool) -> Result<()> {
             ]),
         );
     }
-    if !available {
-        println!("update: cmux-axi already at latest ({VERSION})");
-        return Ok(());
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string(&serde_json::json!({
+                "ok": true, "action": "update", "current": VERSION, "latest": latest, "available": true,
+            }))
+            .unwrap()
+        );
+    } else {
+        println!("update: cmux-axi upgraded {VERSION} -> {latest}");
     }
-    println!("update: cmux-axi upgraded {VERSION} -> {latest}");
     Ok(())
 }
