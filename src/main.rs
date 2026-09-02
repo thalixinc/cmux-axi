@@ -8,12 +8,13 @@ mod error;
 mod fleet;
 mod layout;
 mod ops;
+mod setup;
 mod toon;
+mod version;
 
 use error::{CmuxError, Result};
 use std::collections::HashMap;
 
-const VERSION: &str = env!("CARGO_PKG_VERSION");
 const BIN: &str = "cmux-axi";
 
 /// Parsed argv: positionals + named flags (`--flag value` / `--flag=value` /
@@ -69,8 +70,8 @@ fn takes_value(name: &str) -> bool {
 fn help() -> String {
     format!(
         "usage: {BIN} [command] [args] [flags]\n\
-         commands[7]:\n\
-         \x20 (none)=status dashboard, provision, status, send, read, dev, teardown\n\
+         commands[10]:\n\
+         \x20 (none)=status dashboard, provision, status, send, read, dev, teardown, setup, version, update\n\
          flags: --json (machine-readable), --state-dir <path>, --help, -v/-V/--version\n\
          examples:\n\
          \x20 {BIN} provision myproj --devs 2 --cwd ~/dev/myproj\n\
@@ -79,7 +80,9 @@ fn help() -> String {
          \x20 {BIN} read myproj coordinator\n\
          \x20 {BIN} dev add myproj --specialty node --seed-prompt brief.md\n\
          \x20 {BIN} dev rm myproj dev-1\n\
-         \x20 {BIN} teardown myproj"
+         \x20 {BIN} teardown myproj\n\
+         \x20 {BIN} setup skill [--project] | setup hooks [--project]\n\
+         \x20 {BIN} version | update [--check]"
     )
 }
 
@@ -92,7 +95,7 @@ fn dispatch(args: &[String]) -> Result<()> {
         .iter()
         .any(|a| a == "-v" || a == "-V" || a == "--version")
     {
-        println!("{BIN} {VERSION}");
+        println!("{BIN} {}", version::VERSION);
         return Ok(());
     }
 
@@ -174,6 +177,20 @@ fn dispatch(args: &[String]) -> Result<()> {
         "teardown" => {
             let project = required(rest, 0, "project name")?;
             ops::teardown(project, parsed.flag("force"), state_dir.as_deref(), json)
+        }
+        "version" => {
+            version::cmd_version();
+            Ok(())
+        }
+        "update" => version::cmd_update(parsed.flag("check"), json),
+        "setup" => {
+            let sub = rest.first().map(String::as_str).unwrap_or("");
+            let global = !parsed.flag("project");
+            match sub {
+                "skill" => setup::cmd_setup_skill(global, json),
+                "hooks" => setup::cmd_setup_hooks(global, json),
+                _ => Err(CmuxError::usage("unknown setup subcommand (skill | hooks)")),
+            }
         }
         other => Err(CmuxError::usage(format!(
             "unknown command {other:?} — run `{BIN} --help`"

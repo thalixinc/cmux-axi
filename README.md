@@ -207,6 +207,43 @@ cmux-axi teardown <project> [--force] [--state-dir <path>] [--json]
 
 Closes the `cf-<project>` workspace — panes, surfaces, and every harness process — and clears the project's fleet records. Already-torn-down projects report `already: true`.
 
+### `version`
+
+Print the version.
+
+```
+cmux-axi version        # cmux-axi 0.2.0
+```
+
+### `update`
+
+Self-update for a `cargo install --git` distribution.
+
+```
+cmux-axi update          # reinstall latest from the repo
+cmux-axi update --check  # report current vs latest without installing
+```
+
+`update --check` fetches the version from the repo's default branch and compares it against the running binary; `update` reinstalls latest via `cargo install --git … --force`.
+
+### `setup skill`
+
+Install the bundled discovery-stub skill so the agent learns cmux-axi exists and defers to its live help.
+
+```
+cmux-axi setup skill [--project]   # global by default; --project installs to <cwd>/.claude/skills/
+```
+
+### `setup hooks`
+
+Install a SessionStart hook that surfaces the live fleet map at the start of every session — so the agent is told "a crew exists, here's how to reach it" before it ever searches.
+
+```
+cmux-axi setup hooks [--project]   # global by default; --project writes <cwd>/.claude/settings.json
+```
+
+Both `setup` commands are idempotent (`already: true` on re-run) and marker-matched, so re-installing never duplicates entries.
+
 ---
 
 ## Flags
@@ -285,6 +322,17 @@ Raw cmux has five behaviors that reliably trip up an agent. cmux-axi encapsulate
 2. **Spatial role mapping** — after creation, cmux-axi introspects panes (`list-panes --json`) and sorts them by their `pixel_frame` (x, y) coordinates, so `top-left / top-right / bottom-left / bottom-right` is resolved from geometry, never from ordering assumptions.
 3. **Fleet record** — the resulting `role → surface → session` bindings are written to `fleet.md` atomically (temp file + rename), then read back by every subsequent command.
 4. **Subprocess calls** — every `cmux` invocation goes through one thin wrapper module (single owner), so compatibility and call-shape live in one place.
+
+---
+
+## Teaching the agent (skill + setup hooks)
+
+cmux-axi follows the AXI convention for making itself known to an agent without the agent having to search for it — two complementary pieces:
+
+- **A skill** (bundled, installable via `cmux-axi setup skill`): a thin *discovery stub* that says "cmux-axi exists; run `cmux-axi` for the live dashboard and `cmux-axi --help` for the current reference." It deliberately does **not** restate the command list — the CLI is the single source of truth, so an installed copy can never drift. Install it globally (`~/.claude/skills/`) or project-local (`<cwd>/.claude/skills/`).
+- **A SessionStart hook** (installed via `cmux-axi setup hooks`): runs bare `cmux-axi` at the start of every session and injects the live fleet map + next steps as ambient context. This is the "doesn't have to search" part — the agent is told a crew exists and how to reach it *before* it needs to.
+
+Both are opt-in and idempotent. The alternative (an MCP server) is deliberately avoided: the AXI family's own benchmark showed the CLI beats the MCP path on cost and turns.
 
 ---
 
