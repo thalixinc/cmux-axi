@@ -42,6 +42,42 @@ fn absolute(path: &Path) -> Result<PathBuf> {
 }
 
 /// Resolve the state root: explicit `--state-dir`, else `<cwd>/.omp/state`.
+/// The tab title for a role: `Coordinator`, `Planner`, `Brainstorm`, `Developer 3`
+/// (plus ` · <specialty>` for a disposable developer).
+pub fn title_for(role: &str, specialty: Option<&str>) -> String {
+    let base = match role {
+        "coordinator" => "Coordinator".to_string(),
+        "planner" => "Planner".to_string(),
+        "brainstorm" => "Brainstorm".to_string(),
+        r if r.starts_with("dev-") => format!("Developer {}", &r[4..]),
+        other => other.to_string(),
+    };
+    match specialty {
+        Some(s) if !s.is_empty() => format!("{base} · {s}"),
+        _ => base,
+    }
+}
+
+#[cfg(test)]
+mod title_tests {
+    use super::title_for;
+    #[test]
+    fn titles_follow_the_role() {
+        assert_eq!(title_for("coordinator", None), "Coordinator");
+        assert_eq!(title_for("dev-3", None), "Developer 3");
+        assert_eq!(title_for("dev-4", Some("rust")), "Developer 4 · rust");
+        assert_eq!(title_for("dev-5", Some("")), "Developer 5");
+        assert_eq!(title_for("qa", None), "qa");
+    }
+}
+
+/// Rename a surface's tab; a failure is reported, never fatal (the crew still runs).
+fn title_surface(workspace: &str, surface: &str, title: &str) {
+    if let Err(e) = cmux::run(&["rename-tab", "--workspace", workspace, "--surface", surface, title]) {
+        eprintln!("cmux-axi: could not title {surface} as {title:?}: {e}");
+    }
+}
+
 /// `<home>/.omp/state` → `<home>`; anything else → the launch cwd.
 fn cof_home_of(state: &Path, cwd: &Path) -> PathBuf {
     match (state.file_name(), state.parent().and_then(|p| p.file_name()), state.parent().and_then(|p| p.parent())) {
@@ -117,6 +153,10 @@ pub fn provision(
     // workspace is the clean v1 shape.
 
     let entries = map_roles_to_surfaces(&ws.r#ref, project, &state_str, harness, devs)?;
+    // Tab titles carry the agent title (the workspace already carries the project).
+    for e in &entries {
+        title_surface(&ws.r#ref, &e.surface, &title_for(&e.role, None));
+    }
     let fleet_path = state.join("fleet.md");
     let mut all = fleet::load(&fleet_path)?;
     for e in &entries {
@@ -531,6 +571,7 @@ pub fn dev_add(
     };
     fleet::upsert(&mut all, entry.clone());
     fleet::write(&state.join("fleet.md"), &all)?;
+    title_surface(&ws.r#ref, &new_surface.r#ref, &title_for(&dev_id, specialty));
 
     let note = if let Some(p) = worktree_path {
         format!("worktree={}", p.display())
