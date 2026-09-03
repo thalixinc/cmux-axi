@@ -291,7 +291,26 @@ pub fn status(project: Option<&str>, state_dir: Option<&Path>, json: bool) -> Re
     cmux::ensure_installed()?;
     let cwd = std::env::current_dir().map_err(|e| CmuxError::operational(e.to_string(), "CWD"))?;
     let state = state_root(&cwd, state_dir)?;
-    let rows = fleet::load(&state.join("fleet.md"))?;
+    let mut rows = fleet::load(&state.join("fleet.md"))?;
+
+    // Liveness: a surface that cmux can no longer read is dead; one that came back is active.
+    // fleet.md is rewritten only when something changed.
+    let mut changed = false;
+    for e in rows.iter_mut() {
+        let alive = cmux::run(&["read-screen", "--surface", &e.surface]).is_ok();
+        let next = match (alive, e.status.as_str()) {
+            (false, _) => "dead",
+            (true, "dead") | (true, "unknown") => "active",
+            (true, s) => s,
+        };
+        if next != e.status {
+            e.status = next.to_string();
+            changed = true;
+        }
+    }
+    if changed {
+        fleet::write(&state.join("fleet.md"), &rows)?;
+    }
 
     let filtered: Vec<&FleetEntry> = match project {
         Some(p) => rows.iter().filter(|e| e.project == p).collect(),
@@ -371,8 +390,11 @@ fn resolve_surface(project: &str, role: &str, state_dir: Option<&Path>) -> Resul
     let cwd = std::env::current_dir().map_err(|e| CmuxError::operational(e.to_string(), "CWD"))?;
     let state = state_root(&cwd, state_dir)?;
     let rows = fleet::load(&state.join("fleet.md"))?;
-    fleet::find(&rows, project, role)
-        .map(|e| e.surface.clone())
+    // `cof` is the Chief of Staff: one row for the whole home (recorded by its session start),
+    // reachable from any project's crew.
+    let hit = fleet::find(&rows, project, role)
+        .or_else(|| (role == "cof").then(|| rows.iter().find(|e| e.role == "cof")).flatten());
+    hit.map(|e| e.surface.clone())
         .ok_or_else(|| {
             CmuxError::operational(
                 format!("no fleet entry for {project}/{role}"),
@@ -396,16 +418,19 @@ pub fn send(
     json: bool,
 ) -> Result<()> {
     let surface = resolve_surface(project, role, state_dir)?;
-    let ws = resolve_workspace(project)?;
-    cmux::run(&["send", "--workspace", &ws, "--surface", &surface, text])?;
-    cmux::run(&[
-        "send-key",
-        "--workspace",
-        &ws,
-        "--surface",
-        &surface,
-        "enter",
-    ])?;
+    // Surface refs are global; the crew workspace is only a hint. The Chief of Staff's
+    // surface lives outside the crew workspace, so address it by surface alone.
+    let ws = if role == "cof" { None } else { resolve_workspace(project).ok() };
+    let mut send_args = vec!["send"];
+    let mut key_args = vec!["send-key"];
+    if let Some(w) = &ws {
+        send_args.extend(["--workspace", w]);
+        key_args.extend(["--workspace", w]);
+    }
+    send_args.extend(["--surface", &surface, text]);
+    key_args.extend(["--surface", &surface, "enter"]);
+    cmux::run(&send_args)?;
+    cmux::run(&key_args)?;
     if json {
         println!(
             "{}",
