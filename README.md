@@ -146,6 +146,21 @@ Template format (`layouts/3by2.json` in this repo; user templates live in `$XDG_
 
 `--devs N` sets the initial developer count (default 2). `--devs 0` provisions the layout with empty developer slots, ready for `dev add`.
 
+### Create your own
+
+```sh
+cmux-axi layout create wide --rows 4,1 --heights 0.7,0.3 --dev-slots 4 \
+    --seat coordinator=0,planner=1,brainstorm=2 --summary "four masters over one dev pane"
+cmux-axi layout create mine --from-file ./my-layout.json        # validate + copy any rows/tree template
+cmux-axi layout create mine --from-workspace <ref> --dev-slots 3,4   # capture a hand-arranged workspace
+cmux-axi layout rm mine
+```
+
+- `--rows a,b,…` — pane counts per row, top to bottom; optional `--heights` (one per row, sum 1) and `--widths` (per row, `/`-separated: `0.5,0.25,0.25/0.5,0.5`).
+- `--from-workspace <ref>` — reads `cmux list-panes --json` and recovers a **row grid** (panes grouped by `y`, every pane in a row sharing its height, rows tiling the workspace). The workspace must be visible (`cmux workspace select --workspace <ref>` first — an unfocused one reports zero frames). An L-shaped or column-major arrangement is refused with the frames printed, so you can write it as a `tree` template instead.
+- `--dev-slots` defaults to the last row; `--seat role=slot,…` sets `default_seats`; `--summary` the one-liner. Files land in `~/.config/cmux-axi/layouts/<name>.json` (`--dir` overrides). Built-in names are reserved; replacing a user template needs `--force`.
+- `layout rm <name>` removes a user template (confirms on a terminal; `--force` skips it; built-ins are refused).
+
 ### Crew spec — who sits where
 
 A layout is structure; the **crew spec** seats the agents. Pass it as JSON with `--spec <path>` (or `--spec -` for stdin); flags (`--layout`, `--harness`, `--cwd`, `--devs`) override the spec's scalar fields. With no spec, or a spec without `seats`, the default crew is seated (`coordinator`, `planner`, `brainstorm`, `dev-1..N` with `--devs N`, default 2).
@@ -274,6 +289,23 @@ One template: diagram + JSON (`--json` adds the slot count, leaf order and the c
 
 ```
 cmux-axi layout show <name|path> [--json]
+```
+
+### `layout create <name>`
+
+Write a user template from `--rows`, a file, or a live workspace (see *Create your own* above).
+
+```
+cmux-axi layout create <name> (--rows <a,b,…> [--heights <…>] [--widths <…>] | --from-file <path> | --from-workspace <ref>)
+                      [--dev-slots <a,b>] [--seat <role=slot,…>] [--summary <text>] [--dir <path>] [--force] [--json]
+```
+
+### `layout rm <name>`
+
+Remove a user template.
+
+```
+cmux-axi layout rm <name> [--force] [--dir <path>] [--json]
 ```
 
 ### `teardown <project>`

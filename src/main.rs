@@ -66,7 +66,8 @@ fn takes_value(name: &str) -> bool {
     matches!(
         name,
         "devs" | "cwd" | "harness" | "state-dir" | "project" | "specialty" | "id" | "seed-prompt"
-            | "layout" | "spec"
+            | "layout" | "spec" | "rows" | "heights" | "widths" | "dev-slots" | "seat" | "summary"
+            | "from-file" | "from-workspace" | "dir"
     )
 }
 
@@ -80,6 +81,9 @@ fn help() -> String {
          \x20 {BIN} provision myproj --devs 2 --cwd ~/dev/myproj [--layout <name>]\n\
          \x20 {BIN} provision myproj --spec crew.json   # seats: who sits in which slot\n\
          \x20 {BIN} layout list | layout show 3by2\n\
+         \x20 {BIN} layout create wide --rows 4,1 --heights 0.7,0.3 --dev-slots 4 --seat coordinator=0,planner=1\n\
+         \x20 {BIN} layout create mine --from-workspace <ref>   # capture a hand-arranged row grid\n\
+         \x20 {BIN} layout rm mine\n\
          \x20 {BIN} status --project myproj\n\
          \x20 {BIN} send myproj planner \"plan the next epic\"\n\
          \x20 {BIN} read myproj coordinator\n\
@@ -141,7 +145,27 @@ fn dispatch(args: &[String]) -> Result<()> {
                     let name = required(&rest[1..], 0, "layout name")?;
                     ops::layout_show(name, json)
                 }
-                _ => Err(CmuxError::usage("unknown layout subcommand (list | show)")),
+                "create" => {
+                    let name = required(&rest[1..], 0, "layout name")?;
+                    let o = ops::CreateOpts {
+                        rows: parsed.value("rows"),
+                        heights: parsed.value("heights"),
+                        widths: parsed.value("widths"),
+                        from_file: parsed.value("from-file"),
+                        from_workspace: parsed.value("from-workspace"),
+                        dev_slots: parsed.value("dev-slots"),
+                        seats: parsed.value("seat"),
+                        summary: parsed.value("summary"),
+                        dir: parsed.value("dir"),
+                        force: parsed.flag("force"),
+                    };
+                    ops::layout_create(name, &o, json)
+                }
+                "rm" => {
+                    let name = required(&rest[1..], 0, "layout name")?;
+                    ops::layout_rm(name, parsed.flag("force"), parsed.value("dir").as_deref(), json)
+                }
+                _ => Err(CmuxError::usage("unknown layout subcommand (list | show | create | rm)")),
             }
         }
         "status" => {

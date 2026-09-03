@@ -803,6 +803,116 @@ pub fn layout_show(name: &str, json: bool) -> Result<()> {
     Ok(())
 }
 
+/// Inputs for `layout create` (see `main` for the flags).
+#[derive(Default)]
+pub struct CreateOpts {
+    pub rows: Option<String>,
+    pub heights: Option<String>,
+    pub widths: Option<String>,
+    pub from_file: Option<String>,
+    pub from_workspace: Option<String>,
+    pub dev_slots: Option<String>,
+    pub seats: Option<String>,
+    pub summary: Option<String>,
+    pub dir: Option<String>,
+    pub force: bool,
+}
+
+fn layouts_dir(dir: Option<&str>) -> PathBuf {
+    dir.map(PathBuf::from).unwrap_or_else(templates::user_dir)
+}
+
+pub fn layout_create(name: &str, o: &CreateOpts, json: bool) -> Result<()> {
+    let sources = [o.rows.is_some(), o.from_file.is_some(), o.from_workspace.is_some()]
+        .iter()
+        .filter(|b| **b)
+        .count();
+    if sources != 1 {
+        return Err(CmuxError::usage("give exactly one of --rows <a,b,…>, --from-file <path>, --from-workspace <ref>"));
+    }
+    let mut t = if let Some(rows) = &o.rows {
+        let rows = templates::parse_rows(rows, o.heights.as_deref(), o.widths.as_deref())?;
+        templates::Template { name: name.to_string(), summary: String::new(), rows: Some(rows), tree: None, dev_slots: vec![], default_seats: Default::default() }
+    } else if let Some(path) = &o.from_file {
+        let mut t = templates::load_file(Path::new(path))?;
+        t.name = name.to_string();
+        t
+    } else {
+        let ws = o.from_workspace.as_deref().unwrap_or_default();
+        cmux::ensure_installed()?;
+        let list = cmux::list_panes(ws)?;
+        let c = list.container_frame.unwrap_or_default();
+        let frames: Vec<templates::Frame> = list
+            .panes
+            .iter()
+            .filter_map(|p| p.pixel_frame.map(|f| templates::Frame { x: f.x, y: f.y, w: f.width, h: f.height }))
+            .collect();
+        let rows = templates::rows_from_frames(c.width, c.height, &frames).map_err(|e| {
+            let frames_txt: Vec<String> = frames.iter().map(|f| format!("{}x{}@{},{}", f.w, f.h, f.x, f.y)).collect();
+            CmuxError::usage(format!("{} — frames: container {}x{}; panes {}", e.message, c.width, c.height, frames_txt.join(" ")))
+        })?;
+        templates::Template { name: name.to_string(), summary: format!("captured from {ws}"), rows: Some(rows), tree: None, dev_slots: vec![], default_seats: Default::default() }
+    };
+    // Completions / overrides, valid for every source.
+    if let Some(d) = &o.dev_slots {
+        t.dev_slots = templates::parse_slots("--dev-slots", d)?;
+    } else if t.dev_slots.is_empty() {
+        if let Some(rows) = &t.rows {
+            let n = templates::slots(&t);
+            let last = rows.last().map(|r| r.panes).unwrap_or(0);
+            t.dev_slots = (n - last..n).collect(); // the last row
+        }
+    }
+    if let Some(seats) = &o.seats {
+        t.default_seats = templates::parse_seats(seats)?;
+    }
+    if let Some(sm) = &o.summary {
+        t.summary = sm.clone();
+    }
+    let path = templates::write_user(&layouts_dir(o.dir.as_deref()), &t, o.force)?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&json!({"ok": true, "action": "layout-create", "path": path, "template": t})).unwrap());
+        return Ok(());
+    }
+    println!(
+        "{}",
+        toon::join(&[
+            toon::header(BIN, &format!("layout {} written", t.name)),
+            toon::kv("path", &path.to_string_lossy()),
+            templates::diagram(&t, &slot_labels(&t)),
+            toon::help(&[format!("Run `cmux-axi provision <project> --layout {}`", t.name)]),
+        ])
+    );
+    Ok(())
+}
+
+pub fn layout_rm(name: &str, force: bool, dir: Option<&str>, json: bool) -> Result<()> {
+    let dir = layouts_dir(dir);
+    let path = dir.join(format!("{name}.json"));
+    if path.exists() && !force {
+        use std::io::IsTerminal;
+        if !std::io::stdin().is_terminal() {
+            return Err(CmuxError::usage(format!("remove {}? pass --force (no terminal to confirm on)", path.display())));
+        }
+        eprint!("remove {}? [y/N] ", path.display());
+        let mut answer = String::new();
+        let _ = std::io::stdin().read_line(&mut answer);
+        if !matches!(answer.trim(), "y" | "Y" | "yes") {
+            println!("{}", toon::kv("cancelled", "true"));
+            return Ok(());
+        }
+    }
+    let removed = templates::remove_user(&dir, name)?;
+    if json {
+        println!("{}", serde_json::to_string(&json!({"ok": true, "action": "layout-rm", "removed": removed, "already": removed.is_none()})).unwrap());
+    } else if let Some(p) = removed {
+        println!("ok: layout rm {name} ({})", p.display());
+    } else {
+        println!("already: true (no user layout {name} in {})", dir.display());
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Shared fleet rendering
 // ---------------------------------------------------------------------------

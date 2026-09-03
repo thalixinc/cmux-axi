@@ -72,6 +72,17 @@ pub struct Workspace {
 pub struct PanesList {
     #[serde(default)]
     pub panes: Vec<Pane>,
+    /// Zero-sized unless the workspace is focused.
+    #[serde(default)]
+    pub container_frame: Option<ContainerFrame>,
+}
+
+#[derive(Deserialize, Debug, Clone, Copy, Default)]
+pub struct ContainerFrame {
+    #[serde(default)]
+    pub width: f64,
+    #[serde(default)]
+    pub height: f64,
 }
 
 #[derive(Deserialize, Debug)]
@@ -84,13 +95,11 @@ pub struct Pane {
     #[serde(default)]
     pub surface_refs: Vec<String>,
     #[serde(default)]
-    #[allow(dead_code)] // read by `layout create --from-workspace`
     pub pixel_frame: Option<PixelFrame>,
 }
 
 /// Only populated for the focused workspace.
 #[derive(Deserialize, Debug, Clone, Copy)]
-#[allow(dead_code)] // read by `layout create --from-workspace`
 pub struct PixelFrame {
     #[serde(default)]
     pub x: f64,
