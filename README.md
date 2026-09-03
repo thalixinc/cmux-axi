@@ -42,7 +42,7 @@ cmux send-key --workspace cf-proj --surface surface:M enter
 cmux-axi send proj planner "plan X"
 ```
 
-Combined operations (`send` auto-submits Enter; `provision` builds the whole quad in one call) collapse multi-command recipes into single deterministic calls. Fewer commands written = fewer output tokens, fewer turns, fewer chances to get a ref wrong.
+Combined operations (`send` auto-submits Enter; `provision` builds the whole crew layout in one call) collapse multi-command recipes into single deterministic calls. Fewer commands written = fewer output tokens, fewer turns, fewer chances to get a ref wrong.
 
 ### 3. Idempotency and footgun absorption (fewer retries)
 
@@ -93,26 +93,48 @@ cmux-axi teardown myproj
 
 ---
 
-## The crew layout
+## Layout templates
 
-`provision` builds a fixed 2×2 **quad**:
+A crew's geometry is a **layout template**: structure only, as JSON. Its leaf panes are **slots**, numbered in spatial order (top row left→right, then the next row). Who sits in a slot is decided separately (the default crew below, or a crew spec); a template only says where developer tabs go (`dev_slots`) and, optionally, where the default crew's masters sit (`default_seats`).
+
+```
+cmux-axi layout list            # built-ins + your own, with diagrams
+cmux-axi layout show 2by2       # one template: diagram + JSON
+cmux-axi provision myproj --layout 2by2
+```
+
+Built-in `2by2` (the default) is the original quad:
 
 ```
 ┌──────────────────────────┬──────────────────────────┐
-│ top-left pane            │ top-right pane           │
+│ slot 0                   │ slot 1                   │
 │   [Coordinator] [Planner]│   Brainstorm             │
 ├──────────────────────────┼──────────────────────────┤
-│ bottom-left pane (devs)  │ bottom-right pane (devs) │
-│   [dev-1]                │   [dev-2]                │
-│   [dev-3] …              │   [dev-4] …              │
+│ slot 2 (devs)            │ slot 3 (devs)            │
+│   [dev-1] [dev-3] …      │   [dev-2] [dev-4] …      │
 └──────────────────────────┴──────────────────────────┘
 ```
 
-- **Coordinator** and **Planner** share the top-left pane as two tabs.
-- **Brainstorm** owns the top-right pane.
-- **Developers** fill the two bottom quadrants as tabs, round-robin: dev 1, 3, 5… → bottom-left; dev 2, 4, 6… → bottom-right. More developers = more tabs, not more panes.
+Template format (`layouts/2by2.json` in this repo; user templates live in `$XDG_CONFIG_HOME/cmux-axi/layouts/<name>.json`, default `~/.config/cmux-axi/layouts/`; `--layout <path.json>` loads an ad-hoc file):
 
-`--devs N` sets the initial developer count (default 2). `--devs 0` provisions the quad with empty developer slots, ready for `dev add`.
+```json
+{
+  "name": "2by2",
+  "summary": "Coordinator+Planner tabs | Brainstorm, over two developer panes",
+  "rows": [ { "panes": 2 }, { "panes": 2 } ],
+  "dev_slots": [2, 3],
+  "default_seats": { "coordinator": 0, "planner": 0, "brainstorm": 1 }
+}
+```
+
+- `rows[i].panes` — pane count; optional `height` (fraction of the workspace, all rows or none) and `widths` (one fraction per pane). Equal by default.
+- `tree` instead of `rows` — a raw cmux `--layout` tree whose leaves are `{"slot": n}`, for shapes that are not a row grid.
+- `dev_slots` — slots that take developer tabs, round-robin: `dev-k` → `dev_slots[(k-1) % len]`. An empty developer slot gets one bare terminal.
+- `default_seats` — role → slot for the default crew (`coordinator`, `planner`, `brainstorm`); a master not listed is placed round-robin over the non-developer slots. Several seats in one slot are tabs.
+
+`--devs N` sets the initial developer count (default 2). `--devs 0` provisions the layout with empty developer slots, ready for `dev add`.
+
+What was provisioned is recorded in `<state>/crews/<project>.json` (layout, compiled tree, seats with slots, `dev_slots`); `dev add` and `status` read it, `teardown` removes it. `fleet.md` stays the role → surface record and its grammar never changes.
 
 ### Session model
 
@@ -133,13 +155,14 @@ Every command is `<cmux-axi> <command> ...args ...flags`. Bare `cmux-axi` (no co
 
 ### `provision <project>`
 
-Create the crew quad for a project.
+Create the crew for a project in a layout template.
 
 ```
-cmux-axi provision <project> [--devs N] [--cwd <path>] [--harness <h>] [--state-dir <path>] [--json]
+cmux-axi provision <project> [--layout <name|path>] [--devs N] [--cwd <path>] [--harness <h>] [--state-dir <path>] [--json]
 ```
 
-- Creates a workspace named `cf-<project>` with the quad layout and launches the harness in every surface.
+- Creates a workspace named `cf-<project>` in the layout (default `2by2`) and launches the harness in every surface.
+- `--layout <name|path>` — a built-in or user template name, or a path to a template `.json`. Unknown names list the known ones.
 - **Idempotent** — re-running on an existing project reports `already: true` and prints the existing fleet instead of double-creating.
 - `--devs N` — initial developers (default 2).
 - `--cwd <path>` — the project directory the harness starts in (default `.`).
@@ -197,6 +220,22 @@ cmux-axi dev rm <project> <dev-id> [--force] [--state-dir <path>] [--json]
 
 Closes the developer's surface and removes its fleet record.
 
+### `layout list`
+
+List layout templates — built-ins first, then `~/.config/cmux-axi/layouts/*.json` — with a diagram of each.
+
+```
+cmux-axi layout list [--json]
+```
+
+### `layout show <name>`
+
+One template: diagram + JSON (`--json` adds the slot count, leaf order and the compiled cmux tree).
+
+```
+cmux-axi layout show <name|path> [--json]
+```
+
 ### `teardown <project>`
 
 Remove the whole crew.
@@ -252,6 +291,7 @@ Both `setup` commands are idempotent (`already: true` on re-run) and marker-matc
 |---|---|---|
 | `--json` | all | Machine-readable JSON instead of TOON |
 | `--state-dir <path>` | all | State root (default `<cwd>/.omp/state`) |
+| `--layout <name\|path>` | provision | Layout template (default `2by2`); see `layout list` |
 | `--devs N` | provision | Initial developer count (default 2) |
 | `--cwd <path>` | provision, dev add | Project directory (default `.`) |
 | `--harness <h>` | provision, dev add | `omp` (default) \| `claude` \| `codex` |
@@ -318,8 +358,8 @@ Raw cmux has five behaviors that reliably trip up an agent. cmux-axi encapsulate
 
 ## How it works
 
-1. **Layout JSON** — `provision` builds the quad as a single nested `--layout` tree and hands it to `cmux new-workspace --layout …` in one call.
-2. **Spatial role mapping** — after creation, cmux-axi introspects panes (`list-panes --json`) and sorts them by their `pixel_frame` (x, y) coordinates, so `top-left / top-right / bottom-left / bottom-right` is resolved from geometry, never from ordering assumptions.
+1. **Layout JSON** — `provision` compiles the layout template into a single nested `--layout` tree (rows → binary splits, `split` = first child's share) and hands it to `cmux new-workspace --layout …` in one call.
+2. **Slot mapping** — after creation, cmux-axi lists the panes (`list-panes --json`) and matches pane *index* to the tree's leaf order, so slot → pane is deterministic. (An unfocused workspace reports all-zero pixel frames, so geometry is never consulted.)
 3. **Fleet record** — the resulting `role → surface → session` bindings are written to `fleet.md` atomically (temp file + rename), then read back by every subsequent command.
 4. **Subprocess calls** — every `cmux` invocation goes through one thin wrapper module (single owner), so compatibility and call-shape live in one place.
 

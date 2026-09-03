@@ -4,11 +4,13 @@
 //! mutations, and 0/1/2 exit codes — the AXI family contract.
 
 mod cmux;
+mod crew;
 mod error;
 mod fleet;
 mod layout;
 mod ops;
 mod setup;
+mod templates;
 mod toon;
 mod version;
 
@@ -64,17 +66,19 @@ fn takes_value(name: &str) -> bool {
     matches!(
         name,
         "devs" | "cwd" | "harness" | "state-dir" | "project" | "specialty" | "id" | "seed-prompt"
+            | "layout"
     )
 }
 
 fn help() -> String {
     format!(
         "usage: {BIN} [command] [args] [flags]\n\
-         commands[10]:\n\
-         \x20 (none)=status dashboard, provision, status, send, read, dev, teardown, setup, version, update\n\
+         commands[11]:\n\
+         \x20 (none)=status dashboard, provision, status, send, read, dev, layout, teardown, setup, version, update\n\
          flags: --json (machine-readable), --state-dir <path>, --help, -v/-V/--version\n\
          examples:\n\
-         \x20 {BIN} provision myproj --devs 2 --cwd ~/dev/myproj\n\
+         \x20 {BIN} provision myproj --devs 2 --cwd ~/dev/myproj [--layout <name>]\n\
+         \x20 {BIN} layout list | layout show 2by2\n\
          \x20 {BIN} status --project myproj\n\
          \x20 {BIN} send myproj planner \"plan the next epic\"\n\
          \x20 {BIN} read myproj coordinator\n\
@@ -117,7 +121,19 @@ fn dispatch(args: &[String]) -> Result<()> {
                 .value("devs")
                 .map(|d| d.parse().unwrap_or(2))
                 .unwrap_or(2);
-            ops::provision(project, &cwd, &harness, devs, state_dir.as_deref(), json)
+            let layout = parsed.value("layout").unwrap_or_else(|| templates::DEFAULT.to_string());
+            ops::provision(project, &cwd, &harness, devs, &layout, state_dir.as_deref(), json)
+        }
+        "layout" => {
+            let sub = rest.first().map(String::as_str).unwrap_or("");
+            match sub {
+                "list" => ops::layout_list(json),
+                "show" => {
+                    let name = required(&rest[1..], 0, "layout name")?;
+                    ops::layout_show(name, json)
+                }
+                _ => Err(CmuxError::usage("unknown layout subcommand (list | show)")),
+            }
         }
         "status" => {
             let project = parsed.value("project");

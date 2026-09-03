@@ -2,9 +2,11 @@
 //! Every op prints TOON (default) or `--json` and returns `Result<()>`.
 
 use crate::cmux;
+use crate::crew;
 use crate::error::{CmuxError, Result};
 use crate::fleet::{self, FleetEntry};
-use crate::layout;
+use crate::layout::{self, Seating};
+use crate::templates;
 use crate::toon;
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -102,10 +104,12 @@ pub fn provision(
     cwd: &Path,
     harness: &str,
     devs: usize,
+    layout_name: &str,
     state_dir: Option<&Path>,
     json: bool,
 ) -> Result<()> {
     cmux::ensure_installed()?;
+    let template = templates::resolve(layout_name)?;
     let cwd_abs = absolute(cwd)?;
     let state = state_root(&cwd_abs, state_dir)?;
     std::fs::create_dir_all(&state).map_err(|e| {
@@ -130,11 +134,12 @@ pub fn provision(
     let spec = layout::CrewSpec {
         state_root: &state_str,
         harness,
-        devs,
         project,
         cof_home: &cof_home.to_string_lossy(),
     };
-    let layout_json = serde_json::to_string(&layout::build(&spec))
+    let seating = layout::default_seating(&template, devs)?;
+    let tree = layout::build(&spec, &template, &seating);
+    let layout_json = serde_json::to_string(&tree)
         .map_err(|e| CmuxError::operational(format!("layout build failed: {e}"), "LAYOUT"))?;
 
     cmux::run(&[
@@ -152,7 +157,8 @@ pub fn provision(
     // --from` also spawns a duplicate anchor workspace, so a flat `cf-<project>`
     // workspace is the clean v1 shape.
 
-    let entries = map_roles_to_surfaces(&ws.r#ref, project, &state_str, harness, devs)?;
+    let leaf_order = templates::leaf_order(&template);
+    let entries = map_roles_to_surfaces(&ws.r#ref, project, &state_str, harness, &seating, &leaf_order)?;
     // Tab titles carry the agent title (the workspace already carries the project).
     for e in &entries {
         title_surface(&ws.r#ref, &e.surface, &title_for(&e.role, None));
@@ -163,9 +169,24 @@ pub fn provision(
         fleet::upsert(&mut all, e.clone());
     }
     fleet::write(&fleet_path, &all)?;
+    crew::write(
+        &state,
+        project,
+        &crew::Record {
+            layout: template.name.clone(),
+            slots: templates::slots(&template),
+            dev_slots: template.dev_slots.clone(),
+            leaf_order,
+            tree,
+            seats: seating,
+            harness: harness.to_string(),
+            cwd: cwd_abs.to_string_lossy().to_string(),
+        },
+    )?;
 
     print_fleet(entries.iter().collect(), json);
     if !json {
+        println!("{}", toon::kv("layout", &template.name));
         let help = vec![
             format!("Run `cmux-axi send {project} planner \"…\"` to steer"),
             "Run `cmux-axi status` for drift".to_string(),
@@ -175,103 +196,66 @@ pub fn provision(
     Ok(())
 }
 
-/// Map the freshly-provisioned quad's panes/surfaces to roles using spatial
-/// position (pixel_frame), and build fleet entries.
+/// Map the freshly-provisioned panes to seats. Pane index = layout tree leaf order
+/// (`leaf_order[i]` is the slot at pane i); surfaces within a pane are the seats of that
+/// slot in seat order. Pixel frames are all zero for an unfocused workspace, so geometry
+/// is never consulted.
 fn map_roles_to_surfaces(
     workspace: &str,
     project: &str,
     state_str: &str,
     harness: &str,
-    devs: usize,
+    seating: &Seating,
+    leaf_order: &[usize],
 ) -> Result<Vec<FleetEntry>> {
-    let mut panes = cmux::list_panes(workspace)?.panes;
-    // Sort spatially: top-left, top-right, bottom-left, bottom-right.
-    panes.sort_by(|a, b| {
-        let ay = a.pixel_frame.as_ref().map(|p| p.y).unwrap_or(0.0);
-        let ax = a.pixel_frame.as_ref().map(|p| p.x).unwrap_or(0.0);
-        let by = b.pixel_frame.as_ref().map(|p| p.y).unwrap_or(0.0);
-        let bx = b.pixel_frame.as_ref().map(|p| p.x).unwrap_or(0.0);
-        ay.partial_cmp(&by)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then(ax.partial_cmp(&bx).unwrap_or(std::cmp::Ordering::Equal))
-    });
-
-    let surfaces_of = |pane: &cmux::Pane| -> Result<Vec<cmux::Surface>> {
-        Ok(cmux::list_pane_surfaces(&pane.r#ref, workspace)?.surfaces)
-    };
+    let panes = panes_by_index(workspace)?;
+    if panes.len() != leaf_order.len() {
+        return Err(CmuxError::operational(
+            format!("expected {} panes in {workspace}, found {}", leaf_order.len(), panes.len()),
+            "LAYOUT_UNEXPECTED",
+        ));
+    }
 
     let started = now();
     let mut entries: Vec<FleetEntry> = Vec::new();
-    let mut push = |role: &str, surface: &str, session: String| {
-        entries.push(FleetEntry {
-            role: role.to_string(),
-            project: project.to_string(),
-            surface: surface.to_string(),
-            session,
-            status: "active".to_string(),
-            started: started.clone(),
-        });
-    };
-
-    // panes[0]=top-left, [1]=top-right, [2]=bottom-left, [3]=bottom-right.
-    if panes.len() != 4 {
-        return Err(CmuxError::operational(
-            format!("expected 4 panes in {workspace}, found {}", panes.len()),
-            "LAYOUT_UNEXPECTED",
-        ));
-    }
-
-    // Top-left: coordinator (surface 0), planner (surface 1).
-    let tl = surfaces_of(&panes[0])?;
-    if tl.len() < 2 {
-        return Err(CmuxError::operational(
-            "top-left pane missing coordinator/planner",
-            "LAYOUT_UNEXPECTED",
-        ));
-    }
-    push(
-        "coordinator",
-        &tl[0].r#ref,
-        session_id(state_str, "coordinator", harness),
-    );
-    push(
-        "planner",
-        &tl[1].r#ref,
-        session_id(state_str, "planner", harness),
-    );
-
-    // Top-right: brainstorm.
-    let tr = surfaces_of(&panes[1])?;
-    if tr.is_empty() {
-        return Err(CmuxError::operational(
-            "top-right pane missing brainstorm",
-            "LAYOUT_UNEXPECTED",
-        ));
-    }
-    push(
-        "brainstorm",
-        &tr[0].r#ref,
-        session_id(state_str, "brainstorm", harness),
-    );
-
-    // Bottom panes: developers, round-robin (left=odd, right=even). Placeholder
-    // surfaces beyond `devs` are skipped.
-    let bl = surfaces_of(&panes[2])?;
-    let br = surfaces_of(&panes[3])?;
-    for (i, s) in bl.iter().enumerate() {
-        let dev_id = 2 * i + 1;
-        if dev_id <= devs {
-            push(&format!("dev-{dev_id}"), &s.r#ref, "ephemeral".to_string());
+    for (i, pane) in panes.iter().enumerate() {
+        let slot = leaf_order[i];
+        let seats: Vec<&layout::Seat> = seating.iter().filter(|s| s.slot == slot).collect();
+        if seats.is_empty() {
+            continue; // a bare-terminal slot
+        }
+        let mut surfaces = cmux::list_pane_surfaces(&pane.r#ref, workspace)?.surfaces;
+        surfaces.sort_by_key(|s| s.index.unwrap_or(0));
+        if surfaces.len() < seats.len() {
+            return Err(CmuxError::operational(
+                format!("slot {slot} ({}) has {} surfaces for {} seats", pane.r#ref, surfaces.len(), seats.len()),
+                "LAYOUT_UNEXPECTED",
+            ));
+        }
+        for (seat, surface) in seats.iter().zip(surfaces.iter()) {
+            let session = if seat.resumable {
+                session_id(state_str, &seat.role, harness)
+            } else {
+                "ephemeral".to_string()
+            };
+            entries.push(FleetEntry {
+                role: seat.role.clone(),
+                project: project.to_string(),
+                surface: surface.r#ref.clone(),
+                session,
+                status: "active".to_string(),
+                started: started.clone(),
+            });
         }
     }
-    for (i, s) in br.iter().enumerate() {
-        let dev_id = 2 * i + 2;
-        if dev_id <= devs {
-            push(&format!("dev-{dev_id}"), &s.r#ref, "ephemeral".to_string());
-        }
-    }
-
     Ok(entries)
+}
+
+/// A workspace's panes in cmux index order (= layout tree leaf order).
+fn panes_by_index(workspace: &str) -> Result<Vec<cmux::Pane>> {
+    let mut panes = cmux::list_panes(workspace)?.panes;
+    panes.sort_by_key(|p| p.index.unwrap_or(0));
+    Ok(panes)
 }
 
 /// The `session` field for a role: a session dir for resumable roles, or
@@ -331,6 +315,11 @@ pub fn status(project: Option<&str>, state_dir: Option<&Path>, json: bool) -> Re
         })
         .unwrap_or(false);
 
+    let layout_name = match project {
+        Some(p) => crew::load(&state, p)?.map(|r| r.layout),
+        None => None,
+    };
+
     if json {
         let arr: Vec<_> = filtered
             .iter()
@@ -345,6 +334,7 @@ pub fn status(project: Option<&str>, state_dir: Option<&Path>, json: bool) -> Re
             "{}",
             serde_json::to_string_pretty(&json!({
                 "schemaVersion": 1, "provisioned": provisioned, "fleet": arr,
+                "layout": layout_name,
                 "live_workspace_refs": live_refs.iter().collect::<Vec<_>>(),
             }))
             .unwrap()
@@ -370,6 +360,9 @@ pub fn status(project: Option<&str>, state_dir: Option<&Path>, json: bool) -> Re
         &["role", "project", "surface", "session", "status"],
         &rows,
     ));
+    if let Some(l) = &layout_name {
+        blocks.push(toon::kv("layout", l));
+    }
     let help = if provisioned {
         vec!["Run `cmux-axi teardown <project>` to remove the crew".to_string()]
     } else if let Some(p) = project {
@@ -480,24 +473,32 @@ pub fn dev_add(
     let title = ws_title(project);
     let ws = cmux::find_workspace_by_title(&title)?;
 
-    // Pick the bottom pane with fewer surfaces (balance).
-    let mut panes = cmux::list_panes(&ws.r#ref)?.panes;
-    panes.sort_by(|a, b| {
-        let ay = a.pixel_frame.as_ref().map(|p| p.y).unwrap_or(0.0);
-        let by = b.pixel_frame.as_ref().map(|p| p.y).unwrap_or(0.0);
-        ay.partial_cmp(&by).unwrap_or(std::cmp::Ordering::Equal)
-    });
-    if panes.len() < 4 {
-        return Err(CmuxError::operational(
-            "crew quad not fully provisioned",
-            "LAYOUT_UNEXPECTED",
-        ));
-    }
-    let bottom = &panes[panes.len() - 2..];
-    let pane = bottom
+    // Pick the developer pane with the fewest surfaces (balance). The crew record says
+    // which slots take developers; a crew without one (cmux-axi ≤ 0.2.4) falls back to
+    // "the last two panes", which is what that version assumed.
+    let record = crew::load(&state, project)?;
+    let mut panes = panes_by_index(&ws.r#ref)?;
+    let candidates: Vec<cmux::Pane> = match &record {
+        Some(rec) => panes
+            .into_iter()
+            .enumerate()
+            .filter(|(i, _)| rec.leaf_order.get(*i).map(|s| rec.dev_slots.contains(s)).unwrap_or(false))
+            .map(|(_, p)| p)
+            .collect(),
+        None => {
+            if panes.len() < 4 {
+                return Err(CmuxError::operational(
+                    "crew layout not fully provisioned",
+                    "LAYOUT_UNEXPECTED",
+                ));
+            }
+            panes.split_off(panes.len() - 2)
+        }
+    };
+    let pane = candidates
         .iter()
         .min_by_key(|p| p.surface_refs.len())
-        .ok_or_else(|| CmuxError::operational("no bottom pane available", "LAYOUT_UNEXPECTED"))?;
+        .ok_or_else(|| CmuxError::operational("layout has no developer slots", "LAYOUT_UNEXPECTED"))?;
 
     // Worktree (git-native) if requested and a git repo is present.
     let mut work_dir = cwd_abs.clone();
@@ -561,7 +562,6 @@ pub fn dev_add(
     let spec = layout::CrewSpec {
         state_root: &state_s,
         harness,
-        devs: 0,
         project,
         cof_home: &cof_home.to_string_lossy(),
     };
@@ -697,12 +697,98 @@ pub fn teardown(project: &str, force: bool, state_dir: Option<&Path>, json: bool
     let mut all = fleet::load(&state.join("fleet.md"))?;
     all.retain(|e| e.project != project);
     fleet::write(&state.join("fleet.md"), &all)?;
+    crew::remove(&state, project);
 
     if json {
         println!("{}", serde_json::to_string(&json!({"ok": true, "action": "teardown", "project": project, "workspace": ws.r#ref})).unwrap());
     } else {
         println!("ok: teardown {project} (closed {})", ws.r#ref);
     }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// layout list / show
+// ---------------------------------------------------------------------------
+
+/// Slot labels for a diagram: `0 coordinator`, `3 devs`, or just the number.
+fn slot_labels(t: &templates::Template) -> Vec<String> {
+    (0..templates::slots(t))
+        .map(|s| {
+            let mut who: Vec<&str> = t
+                .default_seats
+                .iter()
+                .filter(|(_, v)| **v == s)
+                .map(|(k, _)| k.as_str())
+                .collect();
+            if t.dev_slots.contains(&s) {
+                who.push("devs");
+            }
+            if who.is_empty() { s.to_string() } else { format!("{s} {}", who.join("+")) }
+        })
+        .collect()
+}
+
+pub fn layout_list(json: bool) -> Result<()> {
+    let all = templates::list();
+    if json {
+        let arr: Vec<_> = all
+            .iter()
+            .map(|(t, src)| {
+                json!({
+                    "name": t.name, "source": src.to_string(), "slots": templates::slots(t),
+                    "dev_slots": t.dev_slots, "default": t.name == templates::DEFAULT,
+                    "summary": t.summary, "template": t,
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&json!({"layouts": arr, "user_dir": templates::user_dir()})).unwrap());
+        return Ok(());
+    }
+    let rows: Vec<Vec<String>> = all
+        .iter()
+        .map(|(t, src)| {
+            vec![
+                t.name.clone(),
+                src.to_string(),
+                templates::slots(t).to_string(),
+                t.dev_slots.iter().map(|s| s.to_string()).collect::<Vec<_>>().join("+"),
+                if t.name == templates::DEFAULT { "yes".into() } else { String::new() },
+                t.summary.clone(),
+            ]
+        })
+        .collect();
+    let mut blocks = vec![
+        toon::header(BIN, "Crew layout templates (structure only; the crew spec seats the agents)"),
+        toon::list("layouts", &["name", "source", "slots", "dev_slots", "default", "summary"], &rows),
+    ];
+    for (t, _) in &all {
+        blocks.push(format!("{}:\n{}", t.name, templates::diagram(t, &slot_labels(t))));
+    }
+    blocks.push(toon::kv("user_dir", &templates::user_dir().to_string_lossy()));
+    blocks.push(toon::help(&[
+        "Run `cmux-axi provision <project> --layout <name>`".to_string(),
+        "Run `cmux-axi layout show <name>` for the JSON".to_string(),
+    ]));
+    println!("{}", toon::join(&blocks));
+    Ok(())
+}
+
+pub fn layout_show(name: &str, json: bool) -> Result<()> {
+    let t = templates::resolve(name)?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&json!({
+            "template": t, "slots": templates::slots(&t), "leaf_order": templates::leaf_order(&t),
+            "tree": templates::compile(&t, (0..templates::slots(&t)).map(|_| templates::bare()).collect()),
+        })).unwrap());
+        return Ok(());
+    }
+    let blocks = vec![
+        toon::header(BIN, &format!("layout {} — {}", t.name, t.summary)),
+        templates::diagram(&t, &slot_labels(&t)),
+        toon::kv("json", &format!("\n{}", serde_json::to_string_pretty(&t).unwrap_or_default())),
+    ];
+    println!("{}", toon::join(&blocks));
     Ok(())
 }
 

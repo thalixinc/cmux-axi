@@ -1,0 +1,7 @@
+{
+  "name": "2by2",
+  "summary": "Coordinator+Planner tabs | Brainstorm, over two developer panes (the original quad)",
+  "rows": [ { "panes": 2 }, { "panes": 2 } ],
+  "dev_slots": [2, 3],
+  "default_seats": { "coordinator": 0, "planner": 0, "brainstorm": 1 }
+}

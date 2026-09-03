@@ -1,34 +1,77 @@
-//! Build the deterministic crew "quad" layout JSON for `cmux new-workspace --layout`.
+//! Seating + the cmux `--layout` tree for a crew.
 //!
-//! Geometry (fixed 2x2):
-//! ```text
-//! ┌──────────────────────────┬──────────────────────────┐
-//! │ top-left pane            │ top-right pane           │
-//! │   coordinator, planner   │   brainstorm             │
-//! ├──────────────────────────┼──────────────────────────┤
-//! │ bottom-left pane (devs)  │ bottom-right pane (devs) │
-//! └──────────────────────────┴──────────────────────────┘
-//! ```
-//! Developers are assigned round-robin: dev 1,3,5… → bottom-left; 2,4,6… →
-//! bottom-right. A quadrant that would be empty gets one bare terminal surface
-//! so the quad is always fully provisioned.
+//! The geometry comes from a `templates::Template` (structure only: slots in spatial
+//! order, `dev_slots`, `default_seats`). This module decides *who sits where*
+//! (`Seating`) and renders the tree that `provision` hands to `cmux new-workspace`.
+//!
+//! Default crew (no crew spec): masters `coordinator`, `planner`, `brainstorm` take the
+//! template's `default_seats`, or round-robin over the non-dev slots; `dev-k` goes to
+//! `dev_slots[(k-1) % len]`. Several seats in one slot are tabs, in seat order. A slot
+//! nobody sits in gets one bare terminal so the pane exists.
 
+use crate::error::{CmuxError, Result};
+use crate::templates::{self, Template};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::Path;
 
-/// The inputs required to build a crew layout.
+/// The inputs required to launch a harness in a pane.
 pub struct CrewSpec<'a> {
     /// Absolute state root (session dirs + fleet.md live under it).
     pub state_root: &'a str,
     /// Harness binary (`omp` | `claude` | `codex`).
     pub harness: &'a str,
-    /// Number of disposable developers.
-    pub devs: usize,
     /// Project the crew works on (exported to every pane as `CF_PROJECT`).
     pub project: &'a str,
     /// The Chief-of-Staff home (state root's grandparent; exported as `CF_COF_HOME`).
     /// When it holds codefactory's session-start extension / crew config, panes load them.
     pub cof_home: &'a str,
+}
+
+/// One agent in one slot. Persisted verbatim in the crew record.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Seat {
+    pub role: String,
+    pub slot: usize,
+    pub resumable: bool,
+}
+
+pub type Seating = Vec<Seat>;
+
+pub const MASTERS: [&str; 3] = ["coordinator", "planner", "brainstorm"];
+
+/// Today's crew, seated by the template's defaults.
+pub fn default_seating(t: &Template, devs: usize) -> Result<Seating> {
+    let n = templates::slots(t);
+    let non_dev: Vec<usize> = (0..n).filter(|s| !t.dev_slots.contains(s)).collect();
+    let pool = if non_dev.is_empty() { (0..n).collect::<Vec<_>>() } else { non_dev };
+    let mut seats = Seating::new();
+    let mut rr = 0;
+    for role in MASTERS {
+        let slot = match t.default_seats.get(role) {
+            Some(s) => *s,
+            None => {
+                let s = pool[rr % pool.len()];
+                rr += 1;
+                s
+            }
+        };
+        seats.push(Seat { role: role.to_string(), slot, resumable: true });
+    }
+    if devs > 0 && t.dev_slots.is_empty() {
+        return Err(CmuxError::usage(format!(
+            "layout {:?} has no dev_slots; use --devs 0 or another layout",
+            t.name
+        )));
+    }
+    for k in 1..=devs {
+        seats.push(Seat {
+            role: format!("dev-{k}"),
+            slot: t.dev_slots[(k - 1) % t.dev_slots.len()],
+            resumable: false,
+        });
+    }
+    Ok(seats)
 }
 
 /// Single-quote a string for the pane's shell command line.
@@ -78,112 +121,113 @@ fn surface(command: String) -> Value {
     json!({ "type": "terminal", "command": command })
 }
 
-/// Build the full `--layout` JSON value.
-pub fn build(spec: &CrewSpec) -> Value {
-    // Top panes.
-    let top_left = json!({
-        "pane": { "surfaces": [
-            surface(harness_command(spec, "coordinator", true)),
-            surface(harness_command(spec, "planner", true)),
-        ]}
-    });
-    let top_right = json!({
-        "pane": { "surfaces": [
-            surface(harness_command(spec, "brainstorm", true)),
-        ]}
-    });
-
-    // Developer surfaces, round-robin across the two bottom quadrants.
-    let mut bottom_left_surfaces: Vec<Value> = Vec::new();
-    let mut bottom_right_surfaces: Vec<Value> = Vec::new();
-    for k in 1..=spec.devs {
-        let cmd = harness_command(spec, &format!("dev-{k}"), false);
-        if k % 2 == 1 {
-            bottom_left_surfaces.push(surface(cmd));
-        } else {
-            bottom_right_surfaces.push(surface(cmd));
-        }
-    }
-    // Never leave an empty quadrant: a bare terminal as a slot.
-    if bottom_left_surfaces.is_empty() {
-        bottom_left_surfaces.push(json!({ "type": "terminal" }));
-    }
-    if bottom_right_surfaces.is_empty() {
-        bottom_right_surfaces.push(json!({ "type": "terminal" }));
-    }
-
-    let bottom_left = json!({ "pane": { "surfaces": bottom_left_surfaces } });
-    let bottom_right = json!({ "pane": { "surfaces": bottom_right_surfaces } });
-
-    // Columns (vertical = stacked top/bottom), root (horizontal = side-by-side).
-    let left =
-        json!({ "direction": "vertical", "split": 0.5, "children": [top_left, bottom_left] });
-    let right =
-        json!({ "direction": "vertical", "split": 0.5, "children": [top_right, bottom_right] });
-
-    json!({ "direction": "horizontal", "split": 0.5, "children": [left, right] })
+/// Build the full `--layout` JSON value: slot n holds the surfaces seated there.
+pub fn build(spec: &CrewSpec, t: &Template, seating: &Seating) -> Value {
+    let n = templates::slots(t);
+    let leaves: Vec<Value> = (0..n)
+        .map(|slot| {
+            let surfaces: Vec<Value> = seating
+                .iter()
+                .filter(|s| s.slot == slot)
+                .map(|s| surface(harness_command(spec, &s.role, s.resumable)))
+                .collect();
+            if surfaces.is_empty() {
+                templates::bare()
+            } else {
+                json!({ "pane": { "surfaces": surfaces } })
+            }
+        })
+        .collect();
+    templates::compile(t, leaves)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn spec(devs: usize) -> CrewSpec<'static> {
+    fn spec() -> CrewSpec<'static> {
         CrewSpec {
             state_root: "/state",
             harness: "omp",
-            devs,
             project: "demo",
             cof_home: "/nonexistent-home",
         }
     }
 
-    fn leaf(v: &Value) -> &Vec<Value> {
-        v["pane"]["surfaces"].as_array().unwrap()
+    fn t() -> Template {
+        templates::resolve("2by2").unwrap()
+    }
+
+    /// Leaf panes' surface arrays in tree (= slot) order.
+    fn leaves(v: &Value, out: &mut Vec<Vec<Value>>) {
+        if let Some(p) = v.get("pane") {
+            out.push(p["surfaces"].as_array().unwrap().clone());
+            return;
+        }
+        for c in v["children"].as_array().unwrap() {
+            leaves(c, out);
+        }
+    }
+
+    fn built(devs: usize) -> Vec<Vec<Value>> {
+        let seating = default_seating(&t(), devs).unwrap();
+        let mut out = Vec::new();
+        leaves(&build(&spec(), &t(), &seating), &mut out);
+        out
     }
 
     #[test]
     fn quad_has_four_panes() {
-        let layout = build(&spec(2));
-        let left = &layout["children"][0];
-        let right = &layout["children"][1];
-        assert_eq!(layout["children"].as_array().unwrap().len(), 2);
-        assert_eq!(leaf(&left["children"][0]).len(), 2); // coordinator + planner
-        assert_eq!(leaf(&left["children"][1]).len(), 1); // dev-1
-        assert_eq!(leaf(&right["children"][0]).len(), 1); // brainstorm
-        assert_eq!(leaf(&right["children"][1]).len(), 1); // dev-2
+        let l = built(2);
+        assert_eq!(l.len(), 4);
+        assert_eq!(l[0].len(), 2); // coordinator + planner
+        assert_eq!(l[1].len(), 1); // brainstorm
+        assert_eq!(l[2].len(), 1); // dev-1
+        assert_eq!(l[3].len(), 1); // dev-2
     }
 
     #[test]
     fn odd_devs_round_robin_left_first() {
-        let layout = build(&spec(3));
-        let left_bottom = leaf(&layout["children"][0]["children"][1]);
-        let right_bottom = leaf(&layout["children"][1]["children"][1]);
-        assert_eq!(left_bottom.len(), 2); // dev-1, dev-3
-        assert_eq!(right_bottom.len(), 1); // dev-2
+        let l = built(3);
+        assert_eq!(l[2].len(), 2); // dev-1, dev-3
+        assert_eq!(l[3].len(), 1); // dev-2
     }
 
     #[test]
     fn zero_devs_still_fills_quad_with_slots() {
-        let layout = build(&spec(0));
-        assert_eq!(leaf(&layout["children"][0]["children"][1]).len(), 1);
-        assert_eq!(leaf(&layout["children"][1]["children"][1]).len(), 1);
+        let l = built(0);
+        assert_eq!(l[2].len(), 1);
+        assert_eq!(l[3].len(), 1);
+        assert!(l[2][0].get("command").is_none()); // bare terminal
     }
 
     #[test]
     fn master_commands_carry_session_dir() {
-        let layout = build(&spec(2));
-        let coord = leaf(&layout["children"][0]["children"][0])[0]["command"]
-            .as_str()
-            .unwrap();
+        let l = built(2);
+        let coord = l[0][0]["command"].as_str().unwrap();
         assert_eq!(
             coord,
             "CF_ROLE='coordinator' CF_PROJECT='demo' CF_COF_HOME='/nonexistent-home' omp --session-dir '/state/sessions/coordinator'"
         );
-        let dev1 = leaf(&layout["children"][0]["children"][1])[0]["command"]
-            .as_str()
-            .unwrap();
+        let dev1 = l[2][0]["command"].as_str().unwrap();
         assert_eq!(dev1, "CF_ROLE='dev-1' CF_PROJECT='demo' CF_COF_HOME='/nonexistent-home' omp --no-session");
+    }
+
+    #[test]
+    fn default_seating_round_robins_masters_without_default_seats() {
+        let mut tpl = t();
+        tpl.default_seats.clear();
+        let s = default_seating(&tpl, 1).unwrap();
+        let slots: Vec<usize> = s.iter().map(|x| x.slot).collect();
+        assert_eq!(slots, vec![0, 1, 0, 2]); // coordinator, planner, brainstorm over slots 0,1; dev-1 → 2
+    }
+
+    #[test]
+    fn devs_need_dev_slots() {
+        let mut tpl = t();
+        tpl.dev_slots.clear();
+        assert!(default_seating(&tpl, 0).is_ok());
+        assert_eq!(default_seating(&tpl, 1).unwrap_err().exit_code(), 2);
     }
 
     #[test]
@@ -194,7 +238,7 @@ mod tests {
         std::fs::write(home.join(".omp/extensions/cf-session-start.ts"), "// ext").unwrap();
         std::fs::write(home.join(".omp/crew-config.yml"), "features: {}").unwrap();
         let home_s = home.to_string_lossy().to_string();
-        let spec = CrewSpec { state_root: "/state", harness: "omp", devs: 1, project: "it's demo", cof_home: &home_s };
+        let spec = CrewSpec { state_root: "/state", harness: "omp", project: "it's demo", cof_home: &home_s };
         let cmd = harness_command(&spec, "planner", true);
         assert!(cmd.contains(&format!(" -e '{}/.omp/extensions/cf-session-start.ts'", home_s)), "{cmd}");
         assert!(cmd.contains(&format!(" --config '{}/.omp/crew-config.yml'", home_s)), "{cmd}");

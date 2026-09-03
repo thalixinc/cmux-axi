@@ -77,18 +77,29 @@ pub struct PanesList {
 #[derive(Deserialize, Debug)]
 pub struct Pane {
     pub r#ref: String,
+    /// cmux's pane index — layout tree leaf order; the only stable geometry signal
+    /// for an unfocused workspace (its pixel frames are all zero).
+    #[serde(default)]
+    pub index: Option<i64>,
     #[serde(default)]
     pub surface_refs: Vec<String>,
     #[serde(default)]
+    #[allow(dead_code)] // read by `layout create --from-workspace`
     pub pixel_frame: Option<PixelFrame>,
 }
 
-#[derive(Deserialize, Debug)]
+/// Only populated for the focused workspace.
+#[derive(Deserialize, Debug, Clone, Copy)]
+#[allow(dead_code)] // read by `layout create --from-workspace`
 pub struct PixelFrame {
     #[serde(default)]
     pub x: f64,
     #[serde(default)]
     pub y: f64,
+    #[serde(default)]
+    pub width: f64,
+    #[serde(default)]
+    pub height: f64,
 }
 
 #[derive(Deserialize, Debug)]
