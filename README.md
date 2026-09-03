@@ -146,6 +146,33 @@ Template format (`layouts/3by2.json` in this repo; user templates live in `$XDG_
 
 `--devs N` sets the initial developer count (default 2). `--devs 0` provisions the layout with empty developer slots, ready for `dev add`.
 
+### Crew spec — who sits where
+
+A layout is structure; the **crew spec** seats the agents. Pass it as JSON with `--spec <path>` (or `--spec -` for stdin); flags (`--layout`, `--harness`, `--cwd`, `--devs`) override the spec's scalar fields. With no spec, or a spec without `seats`, the default crew is seated (`coordinator`, `planner`, `brainstorm`, `dev-1..N` with `--devs N`, default 2).
+
+```json
+{
+  "layout": "3by2",
+  "harness": "omp",
+  "cwd": "/Users/me/dev/myproj",
+  "seats": [
+    { "role": "coordinator", "slot": 0 },
+    { "role": "planner",     "slot": 1, "title": "Planner (api)" },
+    { "role": "brainstorm" },
+    { "role": "dev-1" },
+    { "role": "dev-2", "command": "CF_ROLE='dev-2' codex" }
+  ],
+  "dev_slots": [3, 4]
+}
+```
+
+- `seats[].role` is the only required field. Roles are free-form; cmux-axi only tells the pane its role (`CF_ROLE`) — the harness makes it that agent.
+- `slot` absent: `default_seats[role]` from the template, else round-robin over the non-developer slots; a `dev-N` role goes to `dev_slots[(N-1) % len]`. Two seats in one slot are tabs, in seat order.
+- `resumable` defaults to `true` except for `dev-N` roles (masters `--session-dir`, developers `--no-session`). `title` sets the tab title. `command` replaces the whole harness launch command.
+- `dev_slots` overrides the template's. `devs` and `seats` are exclusive.
+- Validation is a usage error (exit 2): a slot ≥ the slot count, a bad `dev_slots` entry, a role seated twice, an unknown field.
+- Re-running `provision` on an existing crew reports `already:` and, if the spec differs from what was built, a `drift:` line — it never re-seats a live crew (teardown to apply).
+
 What was provisioned is recorded in `<state>/crews/<project>.json` (layout, compiled tree, seats with slots, `dev_slots`); `dev add` and `status` read it, `teardown` removes it. `fleet.md` stays the role → surface record and its grammar never changes.
 
 ### Session model
@@ -170,11 +197,12 @@ Every command is `<cmux-axi> <command> ...args ...flags`. Bare `cmux-axi` (no co
 Create the crew for a project in a layout template.
 
 ```
-cmux-axi provision <project> [--layout <name|path>] [--devs N] [--cwd <path>] [--harness <h>] [--state-dir <path>] [--json]
+cmux-axi provision <project> [--layout <name|path>] [--spec <path|->] [--devs N] [--cwd <path>] [--harness <h>] [--state-dir <path>] [--json]
 ```
 
 - Creates a workspace named `cf-<project>` in the layout (default `3by2`) and launches the harness in every surface.
 - `--layout <name|path>` — a built-in or user template name, or a path to a template `.json`. Unknown names list the known ones.
+- `--spec <path|->` — the crew spec (see above); flags override its scalar fields.
 - **Idempotent** — re-running on an existing project reports `already: true` and prints the existing fleet instead of double-creating.
 - `--devs N` — initial developers (default 2).
 - `--cwd <path>` — the project directory the harness starts in (default `.`).
@@ -304,7 +332,8 @@ Both `setup` commands are idempotent (`already: true` on re-run) and marker-matc
 | `--json` | all | Machine-readable JSON instead of TOON |
 | `--state-dir <path>` | all | State root (default `<cwd>/.omp/state`) |
 | `--layout <name\|path>` | provision | Layout template (default `3by2`); see `layout list` |
-| `--devs N` | provision | Initial developer count (default 2) |
+| `--spec <path\|->` | provision | Crew spec JSON: who sits in which slot |
+| `--devs N` | provision | Initial developer count for the default crew (default 2) |
 | `--cwd <path>` | provision, dev add | Project directory (default `.`) |
 | `--harness <h>` | provision, dev add | `omp` (default) \| `claude` \| `codex` |
 | `--specialty <s>` | dev add | Recorded developer label |

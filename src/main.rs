@@ -66,7 +66,7 @@ fn takes_value(name: &str) -> bool {
     matches!(
         name,
         "devs" | "cwd" | "harness" | "state-dir" | "project" | "specialty" | "id" | "seed-prompt"
-            | "layout"
+            | "layout" | "spec"
     )
 }
 
@@ -78,6 +78,7 @@ fn help() -> String {
          flags: --json (machine-readable), --state-dir <path>, --help, -v/-V/--version\n\
          examples:\n\
          \x20 {BIN} provision myproj --devs 2 --cwd ~/dev/myproj [--layout <name>]\n\
+         \x20 {BIN} provision myproj --spec crew.json   # seats: who sits in which slot\n\
          \x20 {BIN} layout list | layout show 3by2\n\
          \x20 {BIN} status --project myproj\n\
          \x20 {BIN} send myproj planner \"plan the next epic\"\n\
@@ -112,17 +113,25 @@ fn dispatch(args: &[String]) -> Result<()> {
     match cmd {
         "provision" => {
             let project = required(rest, 0, "project name")?;
-            let cwd = parsed
-                .value("cwd")
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(|| std::path::PathBuf::from("."));
-            let harness = parsed.value("harness").unwrap_or_else(|| "omp".to_string());
-            let devs = parsed
-                .value("devs")
-                .map(|d| d.parse().unwrap_or(2))
-                .unwrap_or(2);
-            let layout = parsed.value("layout").unwrap_or_else(|| templates::DEFAULT.to_string());
-            ops::provision(project, &cwd, &harness, devs, &layout, state_dir.as_deref(), json)
+            // Crew spec (JSON) first; flags override its scalar fields.
+            let mut req = match parsed.value("spec") {
+                Some(s) => crew::Request::load(&s)?,
+                None => crew::Request::default(),
+            };
+            if let Some(v) = parsed.value("cwd") {
+                req.cwd = Some(v);
+            }
+            if let Some(v) = parsed.value("harness") {
+                req.harness = Some(v);
+            }
+            if let Some(v) = parsed.value("layout") {
+                req.layout = Some(v);
+            }
+            if let Some(v) = parsed.value("devs") {
+                req.devs = Some(v.parse().map_err(|_| CmuxError::usage("--devs must be a number"))?);
+            }
+            req.validate()?;
+            ops::provision(project, &req, state_dir.as_deref(), json)
         }
         "layout" => {
             let sub = rest.first().map(String::as_str).unwrap_or("");

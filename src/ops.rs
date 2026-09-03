@@ -99,33 +99,39 @@ fn state_root(cwd: &Path, explicit: Option<&Path>) -> Result<PathBuf> {
 // provision
 // ---------------------------------------------------------------------------
 
-pub fn provision(
-    project: &str,
-    cwd: &Path,
-    harness: &str,
-    devs: usize,
-    layout_name: &str,
-    state_dir: Option<&Path>,
-    json: bool,
-) -> Result<()> {
+/// `req` is the crew spec with flags already merged in (see `main`): layout, harness,
+/// cwd, and either `devs` (default crew) or explicit `seats`.
+pub fn provision(project: &str, req: &crew::Request, state_dir: Option<&Path>, json: bool) -> Result<()> {
     cmux::ensure_installed()?;
-    let template = templates::resolve(layout_name)?;
-    let cwd_abs = absolute(cwd)?;
+    let template = templates::resolve(req.layout.as_deref().unwrap_or(templates::DEFAULT))?;
+    let harness = req.harness.as_deref().unwrap_or("omp");
+    let cwd_abs = absolute(Path::new(req.cwd.as_deref().unwrap_or(".")))?;
     let state = state_root(&cwd_abs, state_dir)?;
     std::fs::create_dir_all(&state).map_err(|e| {
         CmuxError::operational(format!("cannot create {}: {e}", state.display()), "STATE")
     })?;
     let state_str = state.to_string_lossy().to_string();
+    let seating = if req.seats.is_empty() {
+        layout::default_seating(&template, req.devs.unwrap_or(2))?
+    } else {
+        layout::seat(&template, &req.seats, req.dev_slots.as_deref())?
+    };
+    let dev_slots = req.dev_slots.clone().unwrap_or_else(|| template.dev_slots.clone());
 
     let title = ws_title(project);
     if let Ok(existing) = cmux::find_workspace_by_title(&title) {
-        // Idempotent: already provisioned.
+        // Idempotent: already provisioned. A differing spec is reported, never applied.
         let rows = fleet::load(&state.join("fleet.md"))?;
         print_fleet(rows.iter().filter(|e| e.project == project).collect(), json);
         println!(
             "{}",
             toon::kv("already", &format!("{} ({})", title, existing.r#ref))
         );
+        if let Some(rec) = crew::load(&state, project)? {
+            if rec.layout != template.name || rec.seats != seating {
+                println!("{}", toon::kv("drift", "spec differs from the provisioned crew (teardown to apply)"));
+            }
+        }
         return Ok(());
     }
 
@@ -137,7 +143,6 @@ pub fn provision(
         project,
         cof_home: &cof_home.to_string_lossy(),
     };
-    let seating = layout::default_seating(&template, devs)?;
     let tree = layout::build(&spec, &template, &seating);
     let layout_json = serde_json::to_string(&tree)
         .map_err(|e| CmuxError::operational(format!("layout build failed: {e}"), "LAYOUT"))?;
@@ -161,7 +166,12 @@ pub fn provision(
     let entries = map_roles_to_surfaces(&ws.r#ref, project, &state_str, harness, &seating, &leaf_order)?;
     // Tab titles carry the agent title (the workspace already carries the project).
     for e in &entries {
-        title_surface(&ws.r#ref, &e.surface, &title_for(&e.role, None));
+        let title = seating
+            .iter()
+            .find(|s| s.role == e.role)
+            .and_then(|s| s.title.clone())
+            .unwrap_or_else(|| title_for(&e.role, None));
+        title_surface(&ws.r#ref, &e.surface, &title);
     }
     let fleet_path = state.join("fleet.md");
     let mut all = fleet::load(&fleet_path)?;
@@ -175,7 +185,7 @@ pub fn provision(
         &crew::Record {
             layout: template.name.clone(),
             slots: templates::slots(&template),
-            dev_slots: template.dev_slots.clone(),
+            dev_slots,
             leaf_order,
             tree,
             seats: seating,
@@ -315,10 +325,11 @@ pub fn status(project: Option<&str>, state_dir: Option<&Path>, json: bool) -> Re
         })
         .unwrap_or(false);
 
-    let layout_name = match project {
-        Some(p) => crew::load(&state, p)?.map(|r| r.layout),
+    let record = match project {
+        Some(p) => crew::load(&state, p)?,
         None => None,
     };
+    let layout_name = record.as_ref().map(|r| r.layout.clone());
 
     if json {
         let arr: Vec<_> = filtered
@@ -334,7 +345,7 @@ pub fn status(project: Option<&str>, state_dir: Option<&Path>, json: bool) -> Re
             "{}",
             serde_json::to_string_pretty(&json!({
                 "schemaVersion": 1, "provisioned": provisioned, "fleet": arr,
-                "layout": layout_name,
+                "layout": layout_name, "crew": record,
                 "live_workspace_refs": live_refs.iter().collect::<Vec<_>>(),
             }))
             .unwrap()
