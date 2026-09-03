@@ -17,7 +17,7 @@ cmux-axi --help     # full command reference
 
 Core commands:
 
-- `cmux-axi provision <project> [--layout <name>]` — create the crew (one workspace, N surfaces) in a layout template.
+- `cmux-axi provision <project> [--layout <name>]` — create the crew (one workspace, N surfaces) in a layout template (default `3by2`: Coordinator | Planner | Brainstorm over two developer panes; `2by2` is the old quad).
 - `cmux-axi layout list` / `layout show <name>` — the layout templates (structure only; the crew is seated into it).
 - `cmux-axi status [--project <p>]` — fleet map, drift-flagged.
 - `cmux-axi send <project> <role> "<text>"` — type-and-submit to a role's surface.

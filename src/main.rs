@@ -78,7 +78,7 @@ fn help() -> String {
          flags: --json (machine-readable), --state-dir <path>, --help, -v/-V/--version\n\
          examples:\n\
          \x20 {BIN} provision myproj --devs 2 --cwd ~/dev/myproj [--layout <name>]\n\
-         \x20 {BIN} layout list | layout show 2by2\n\
+         \x20 {BIN} layout list | layout show 3by2\n\
          \x20 {BIN} status --project myproj\n\
          \x20 {BIN} send myproj planner \"plan the next epic\"\n\
          \x20 {BIN} read myproj coordinator\n\

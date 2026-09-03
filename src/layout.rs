@@ -214,6 +214,36 @@ mod tests {
     }
 
     #[test]
+    fn three_by_two_has_five_slots_one_master_each() {
+        let tpl = templates::resolve("3by2").unwrap();
+        let seating = default_seating(&tpl, 2).unwrap();
+        let mut out = Vec::new();
+        leaves(&build(&spec(), &tpl, &seating), &mut out);
+        assert_eq!(out.len(), 5);
+        for slot in 0..5 {
+            assert_eq!(out[slot].len(), 1, "slot {slot}");
+        }
+        let role_at = |slot: usize| out[slot][0]["command"].as_str().unwrap().split('\'').nth(1).unwrap().to_string();
+        assert_eq!(role_at(0), "coordinator");
+        assert_eq!(role_at(1), "planner");
+        assert_eq!(role_at(2), "brainstorm");
+        assert_eq!(role_at(3), "dev-1");
+        assert_eq!(role_at(4), "dev-2");
+    }
+
+    #[test]
+    fn three_by_two_odd_devs_left_first() {
+        let tpl = templates::resolve("3by2").unwrap();
+        let seating = default_seating(&tpl, 3).unwrap();
+        let dev3 = seating.iter().find(|s| s.role == "dev-3").unwrap();
+        assert_eq!(dev3.slot, 3);
+        let mut out = Vec::new();
+        leaves(&build(&spec(), &tpl, &seating), &mut out);
+        assert_eq!(out[3].len(), 2);
+        assert_eq!(out[4].len(), 1);
+    }
+
+    #[test]
     fn default_seating_round_robins_masters_without_default_seats() {
         let mut tpl = t();
         tpl.default_seats.clear();

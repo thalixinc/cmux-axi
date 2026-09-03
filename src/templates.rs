@@ -20,9 +20,12 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// The template that `provision` uses when no `--layout` is given.
-pub const DEFAULT: &str = "2by2";
+pub const DEFAULT: &str = "3by2";
 
-const BUILTIN_JSON: &[&str] = &[include_str!("../layouts/2by2.json")];
+const BUILTIN_JSON: &[&str] = &[
+    include_str!("../layouts/2by2.json"),
+    include_str!("../layouts/3by2.json"),
+];
 
 /// One row of a `rows` template.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -405,6 +408,18 @@ mod tests {
         assert_eq!(t.default_seats["planner"], 0);
         assert_eq!(t.default_seats["brainstorm"], 1);
         assert_eq!(leaf_order(&t), vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn default_is_3by2_and_builtins_validate() {
+        assert_eq!(DEFAULT, "3by2");
+        for t in builtins() {
+            validate(&t).unwrap();
+        }
+        let t = resolve("3by2").unwrap();
+        assert_eq!(slots(&t), 5);
+        assert_eq!(t.dev_slots, vec![3, 4]);
+        assert_eq!(t.rows.as_ref().unwrap()[0].height, Some(0.6));
     }
 
     #[test]

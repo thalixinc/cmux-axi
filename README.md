@@ -99,11 +99,23 @@ A crew's geometry is a **layout template**: structure only, as JSON. Its leaf pa
 
 ```
 cmux-axi layout list            # built-ins + your own, with diagrams
-cmux-axi layout show 2by2       # one template: diagram + JSON
+cmux-axi layout show 3by2       # one template: diagram + JSON
 cmux-axi provision myproj --layout 2by2
 ```
 
-Built-in `2by2` (the default) is the original quad:
+Built-in **`3by2`** is the default — every master in its own pane, all three visible at once, over two developer panes:
+
+```
+┌─────────────────┬─────────────────┬─────────────────┐
+│ slot 0          │ slot 1          │ slot 2          │  60 %
+│   Coordinator   │   Planner       │   Brainstorm    │
+├──────────────────────────┬──────────────────────────┤
+│ slot 3 (devs)            │ slot 4 (devs)            │  40 %
+│   [dev-1] [dev-3] …      │   [dev-2] [dev-4] …      │
+└──────────────────────────┴──────────────────────────┘
+```
+
+Built-in **`2by2`** is the original quad (`--layout 2by2`):
 
 ```
 ┌──────────────────────────┬──────────────────────────┐
@@ -115,15 +127,15 @@ Built-in `2by2` (the default) is the original quad:
 └──────────────────────────┴──────────────────────────┘
 ```
 
-Template format (`layouts/2by2.json` in this repo; user templates live in `$XDG_CONFIG_HOME/cmux-axi/layouts/<name>.json`, default `~/.config/cmux-axi/layouts/`; `--layout <path.json>` loads an ad-hoc file):
+Template format (`layouts/3by2.json` in this repo; user templates live in `$XDG_CONFIG_HOME/cmux-axi/layouts/<name>.json`, default `~/.config/cmux-axi/layouts/`; `--layout <path.json>` loads an ad-hoc file):
 
 ```json
 {
-  "name": "2by2",
-  "summary": "Coordinator+Planner tabs | Brainstorm, over two developer panes",
-  "rows": [ { "panes": 2 }, { "panes": 2 } ],
-  "dev_slots": [2, 3],
-  "default_seats": { "coordinator": 0, "planner": 0, "brainstorm": 1 }
+  "name": "3by2",
+  "summary": "Coordinator | Planner | Brainstorm over Developer 1 | Developer 2",
+  "rows": [ { "panes": 3, "height": 0.6 }, { "panes": 2, "height": 0.4 } ],
+  "dev_slots": [3, 4],
+  "default_seats": { "coordinator": 0, "planner": 1, "brainstorm": 2 }
 }
 ```
 
@@ -161,7 +173,7 @@ Create the crew for a project in a layout template.
 cmux-axi provision <project> [--layout <name|path>] [--devs N] [--cwd <path>] [--harness <h>] [--state-dir <path>] [--json]
 ```
 
-- Creates a workspace named `cf-<project>` in the layout (default `2by2`) and launches the harness in every surface.
+- Creates a workspace named `cf-<project>` in the layout (default `3by2`) and launches the harness in every surface.
 - `--layout <name|path>` — a built-in or user template name, or a path to a template `.json`. Unknown names list the known ones.
 - **Idempotent** — re-running on an existing project reports `already: true` and prints the existing fleet instead of double-creating.
 - `--devs N` — initial developers (default 2).
@@ -291,7 +303,7 @@ Both `setup` commands are idempotent (`already: true` on re-run) and marker-matc
 |---|---|---|
 | `--json` | all | Machine-readable JSON instead of TOON |
 | `--state-dir <path>` | all | State root (default `<cwd>/.omp/state`) |
-| `--layout <name\|path>` | provision | Layout template (default `2by2`); see `layout list` |
+| `--layout <name\|path>` | provision | Layout template (default `3by2`); see `layout list` |
 | `--devs N` | provision | Initial developer count (default 2) |
 | `--cwd <path>` | provision, dev add | Project directory (default `.`) |
 | `--harness <h>` | provision, dev add | `omp` (default) \| `claude` \| `codex` |

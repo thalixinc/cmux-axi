@@ -1,0 +1,7 @@
+{
+  "name": "3by2",
+  "summary": "Coordinator | Planner | Brainstorm over Developer 1 | Developer 2",
+  "rows": [ { "panes": 3, "height": 0.6 }, { "panes": 2, "height": 0.4 } ],
+  "dev_slots": [3, 4],
+  "default_seats": { "coordinator": 0, "planner": 1, "brainstorm": 2 }
+}
