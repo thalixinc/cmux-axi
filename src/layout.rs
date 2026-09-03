@@ -14,6 +14,7 @@
 //! so the quad is always fully provisioned.
 
 use serde_json::{json, Value};
+use std::path::Path;
 
 /// The inputs required to build a crew layout.
 pub struct CrewSpec<'a> {
@@ -23,17 +24,52 @@ pub struct CrewSpec<'a> {
     pub harness: &'a str,
     /// Number of disposable developers.
     pub devs: usize,
+    /// Project the crew works on (exported to every pane as `CF_PROJECT`).
+    pub project: &'a str,
+    /// The Chief-of-Staff home (state root's grandparent; exported as `CF_COF_HOME`).
+    /// When it holds codefactory's session-start extension / crew config, panes load them.
+    pub cof_home: &'a str,
+}
+
+/// Single-quote a string for the pane's shell command line.
+fn sh_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 /// The harness launch command for a surface, honoring the session model:
 /// masters are resumable (`--session-dir <role>`), developers ephemeral
-/// (`--no-session`). Session isolation is `omp`-specific for now.
-fn harness_command(spec: &CrewSpec, role: Option<&str>) -> String {
+/// (`--no-session`). Every `omp` pane is told who it is (`CF_ROLE`, `CF_PROJECT`,
+/// `CF_COF_HOME`) and, when the Chief-of-Staff home provides them, loads codefactory's
+/// session-start extension (`-e`) and crew config overlay (`--config`) — that is what
+/// makes a pane open as its role instead of as a bare shell. Session isolation is
+/// `omp`-specific for now.
+pub fn harness_command(spec: &CrewSpec, role: &str, resumable: bool) -> String {
     match spec.harness {
-        "omp" => match role {
-            Some(r) => format!("omp --session-dir {}/sessions/{}", spec.state_root, r),
-            None => "omp --no-session".to_string(),
-        },
+        "omp" => {
+            let mut cmd = format!(
+                "CF_ROLE={} CF_PROJECT={} CF_COF_HOME={} omp",
+                sh_quote(role),
+                sh_quote(spec.project),
+                sh_quote(spec.cof_home)
+            );
+            let ext = Path::new(spec.cof_home).join(".omp/extensions/cf-session-start.ts");
+            if ext.exists() {
+                cmd.push_str(&format!(" -e {}", sh_quote(&ext.to_string_lossy())));
+            }
+            let cfg = Path::new(spec.cof_home).join(".omp/crew-config.yml");
+            if cfg.exists() {
+                cmd.push_str(&format!(" --config {}", sh_quote(&cfg.to_string_lossy())));
+            }
+            if resumable {
+                cmd.push_str(&format!(
+                    " --session-dir {}",
+                    sh_quote(&format!("{}/sessions/{}", spec.state_root, role))
+                ));
+            } else {
+                cmd.push_str(" --no-session");
+            }
+            cmd
+        }
         other => other.to_string(), // claude/codex: launch bare; no session isolation yet
     }
 }
@@ -47,13 +83,13 @@ pub fn build(spec: &CrewSpec) -> Value {
     // Top panes.
     let top_left = json!({
         "pane": { "surfaces": [
-            surface(harness_command(spec, Some("coordinator"))),
-            surface(harness_command(spec, Some("planner"))),
+            surface(harness_command(spec, "coordinator", true)),
+            surface(harness_command(spec, "planner", true)),
         ]}
     });
     let top_right = json!({
         "pane": { "surfaces": [
-            surface(harness_command(spec, Some("brainstorm"))),
+            surface(harness_command(spec, "brainstorm", true)),
         ]}
     });
 
@@ -61,7 +97,7 @@ pub fn build(spec: &CrewSpec) -> Value {
     let mut bottom_left_surfaces: Vec<Value> = Vec::new();
     let mut bottom_right_surfaces: Vec<Value> = Vec::new();
     for k in 1..=spec.devs {
-        let cmd = harness_command(spec, None);
+        let cmd = harness_command(spec, &format!("dev-{k}"), false);
         if k % 2 == 1 {
             bottom_left_surfaces.push(surface(cmd));
         } else {
@@ -97,6 +133,8 @@ mod tests {
             state_root: "/state",
             harness: "omp",
             devs,
+            project: "demo",
+            cof_home: "/nonexistent-home",
         }
     }
 
@@ -138,10 +176,29 @@ mod tests {
         let coord = leaf(&layout["children"][0]["children"][0])[0]["command"]
             .as_str()
             .unwrap();
-        assert_eq!(coord, "omp --session-dir /state/sessions/coordinator");
+        assert_eq!(
+            coord,
+            "CF_ROLE='coordinator' CF_PROJECT='demo' CF_COF_HOME='/nonexistent-home' omp --session-dir '/state/sessions/coordinator'"
+        );
         let dev1 = leaf(&layout["children"][0]["children"][1])[0]["command"]
             .as_str()
             .unwrap();
-        assert_eq!(dev1, "omp --no-session");
+        assert_eq!(dev1, "CF_ROLE='dev-1' CF_PROJECT='demo' CF_COF_HOME='/nonexistent-home' omp --no-session");
+    }
+
+    #[test]
+    fn panes_load_codefactory_extension_and_crew_config_when_the_home_has_them() {
+        let home = std::env::temp_dir().join(format!("cmux-axi-home-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(home.join(".omp/extensions")).unwrap();
+        std::fs::write(home.join(".omp/extensions/cf-session-start.ts"), "// ext").unwrap();
+        std::fs::write(home.join(".omp/crew-config.yml"), "features: {}").unwrap();
+        let home_s = home.to_string_lossy().to_string();
+        let spec = CrewSpec { state_root: "/state", harness: "omp", devs: 1, project: "it's demo", cof_home: &home_s };
+        let cmd = harness_command(&spec, "planner", true);
+        assert!(cmd.contains(&format!(" -e '{}/.omp/extensions/cf-session-start.ts'", home_s)), "{cmd}");
+        assert!(cmd.contains(&format!(" --config '{}/.omp/crew-config.yml'", home_s)), "{cmd}");
+        assert!(cmd.starts_with("CF_ROLE='planner' CF_PROJECT='it'\\''s demo' "), "{cmd}");
+        let _ = std::fs::remove_dir_all(&home);
     }
 }

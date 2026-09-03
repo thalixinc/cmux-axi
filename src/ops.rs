@@ -42,6 +42,14 @@ fn absolute(path: &Path) -> Result<PathBuf> {
 }
 
 /// Resolve the state root: explicit `--state-dir`, else `<cwd>/.omp/state`.
+/// `<home>/.omp/state` → `<home>`; anything else → the launch cwd.
+fn cof_home_of(state: &Path, cwd: &Path) -> PathBuf {
+    match (state.file_name(), state.parent().and_then(|p| p.file_name()), state.parent().and_then(|p| p.parent())) {
+        (Some(s), Some(o), Some(home)) if s == "state" && o == ".omp" => home.to_path_buf(),
+        _ => cwd.to_path_buf(),
+    }
+}
+
 fn state_root(cwd: &Path, explicit: Option<&Path>) -> Result<PathBuf> {
     match explicit {
         Some(p) => absolute(p),
@@ -81,10 +89,14 @@ pub fn provision(
         return Ok(());
     }
 
+    // The Chief-of-Staff home is the state root's grandparent (<home>/.omp/state).
+    let cof_home = cof_home_of(&state, &cwd_abs);
     let spec = layout::CrewSpec {
         state_root: &state_str,
         harness,
         devs,
+        project,
+        cof_home: &cof_home.to_string_lossy(),
     };
     let layout_json = serde_json::to_string(&layout::build(&spec))
         .map_err(|e| CmuxError::operational(format!("layout build failed: {e}"), "LAYOUT"))?;
@@ -465,10 +477,30 @@ pub fn dev_add(
         .max_by_key(|s| s.index.unwrap_or(0))
         .ok_or_else(|| CmuxError::operational("no surface created", "SURFACE"))?;
 
-    let mut cmd = match harness {
-        "omp" => "omp --no-session".to_string(),
-        other => other.to_string(),
+    // Mint a unique dev id if none given (the pane is told its role at launch).
+    let mut all = fleet::load(&state.join("fleet.md"))?;
+    let dev_id = match id {
+        Some(i) => i.to_string(),
+        None => {
+            let max = all
+                .iter()
+                .filter(|e| e.project == project && e.role.starts_with("dev-"))
+                .filter_map(|e| e.role.trim_start_matches("dev-").parse::<usize>().ok())
+                .max()
+                .unwrap_or(0);
+            format!("dev-{}", max + 1)
+        }
     };
+    let cof_home = cof_home_of(&state, &cwd_abs);
+    let state_s = state.to_string_lossy().to_string();
+    let spec = layout::CrewSpec {
+        state_root: &state_s,
+        harness,
+        devs: 0,
+        project,
+        cof_home: &cof_home.to_string_lossy(),
+    };
+    let mut cmd = layout::harness_command(&spec, &dev_id, false);
     if let Some(seed) = seed_prompt {
         let seed_abs = absolute(seed)?;
         cmd = format!("{cmd} @{}", seed_abs.to_string_lossy());
@@ -489,20 +521,6 @@ pub fn dev_add(
         &new_surface.r#ref,
         "enter",
     ])?;
-    // Mint a unique dev id if none given.
-    let mut all = fleet::load(&state.join("fleet.md"))?;
-    let dev_id = match id {
-        Some(i) => i.to_string(),
-        None => {
-            let max = all
-                .iter()
-                .filter(|e| e.project == project && e.role.starts_with("dev-"))
-                .filter_map(|e| e.role.trim_start_matches("dev-").parse::<usize>().ok())
-                .max()
-                .unwrap_or(0);
-            format!("dev-{}", max + 1)
-        }
-    };
     let entry = FleetEntry {
         role: dev_id.clone(),
         project: project.to_string(),
