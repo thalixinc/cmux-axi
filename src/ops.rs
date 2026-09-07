@@ -198,7 +198,7 @@ pub fn provision(project: &str, req: &crew::Request, state_dir: Option<&Path>, j
     if !json {
         println!("{}", toon::kv("layout", &template.name));
         let help = vec![
-            format!("Run `cmux-axi send {project} planner \"…\"` to steer"),
+            format!("Run `cmux-axi send {project} coordinator \"…\"` to steer — the Coordinator is the crew's channel"),
             "Run `cmux-axi status` for drift".to_string(),
         ];
         println!("\n{}", toon::help(&help));

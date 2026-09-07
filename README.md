@@ -82,7 +82,7 @@ cargo build --release
 cmux-axi                                        # dashboard: fleet map + next steps
 cmux-axi provision myproj --devs 2 --cwd ~/dev/myproj
 cmux-axi status --project myproj                # fleet map ⊕ live cmux, drift flagged
-cmux-axi send myproj planner "plan the next epic"
+cmux-axi send myproj coordinator "plan the next epic"
 cmux-axi read myproj coordinator                # read-screen on that surface
 cmux-axi dev add myproj --specialty node --seed-prompt brief.md
 cmux-axi dev rm myproj dev-1
@@ -391,7 +391,7 @@ Both `setup` commands are idempotent (`already: true` on re-run) and marker-matc
     dev-1,myproj,surface:111,ephemeral,active
     dev-2,myproj,surface:113,ephemeral,active
   help[1]:
-    - Run `cmux-axi send myproj planner "…"` to steer
+    - Run `cmux-axi send myproj coordinator "…"` to steer — the Coordinator is the crew's channel
   ```
 
 - **`--json`** is the explicit opt-in for machine-readable output.

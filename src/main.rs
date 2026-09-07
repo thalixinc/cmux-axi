@@ -85,7 +85,7 @@ fn help() -> String {
          \x20 {BIN} layout create mine --from-workspace <ref>   # capture a hand-arranged row grid\n\
          \x20 {BIN} layout rm mine\n\
          \x20 {BIN} status --project myproj\n\
-         \x20 {BIN} send myproj planner \"plan the next epic\"\n\
+         \x20 {BIN} send myproj coordinator \"plan the next epic\"\n\
          \x20 {BIN} read myproj coordinator\n\
          \x20 {BIN} dev add myproj --specialty node --seed-prompt brief.md\n\
          \x20 {BIN} dev rm myproj dev-1\n\
