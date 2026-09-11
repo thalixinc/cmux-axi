@@ -362,7 +362,7 @@ Both `setup` commands are idempotent (`already: true` on re-run) and marker-matc
 | Flag | Applies to | Meaning |
 |---|---|---|
 | `--json` | all | Machine-readable JSON instead of TOON |
-| `--state-dir <path>` | all | State root (default `<cwd>/.omp/state`) |
+| `--state-dir <path>` | all | State root (default `$HOME/.omp/state`) |
 | `--layout <name\|path>` | provision | Layout template (default `3by2`); see `layout list` |
 | `--spec <path\|->` | provision | Crew spec JSON: who sits in which slot |
 | `--devs N` | provision | Initial developer count for the default crew (default 2) |
@@ -403,7 +403,7 @@ Both `setup` commands are idempotent (`already: true` on re-run) and marker-matc
 
 ## State on disk
 
-Everything is under the state root (default `<cwd>/.omp/state`; override with `--state-dir`):
+Everything is under the state root (default `$HOME/.omp/state` — the one shared registry home; override with `--state-dir`):
 
 | Path | Contents |
 |---|---|
