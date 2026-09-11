@@ -7,13 +7,59 @@
 use crate::error::{CmuxError, Result};
 use crate::toon;
 use std::cmp::Ordering;
+use std::io::IsTerminal;
 use std::process::Command;
 
 pub const REPO: &str = "https://github.com/thalixinc/cmux-axi";
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-pub fn cmd_version() {
+pub fn cmd_version(yes: bool) -> Result<()> {
+    // Always print the version line first (script-safe; `-v`/`-V`/`--version` stop here).
     println!("cmux-axi {VERSION}");
+
+    // The update-available surface (mirrors cf #368): a newer release → "update available";
+    // `--yes` auto-updates; otherwise an interactive [y/N] (non-tty = reported, never blocks).
+    let latest = fetch_latest_version()?;
+    if semver_cmp(&latest, VERSION) != Ordering::Greater {
+        return Ok(()); // on latest: just the version line, no prompt.
+    }
+
+    if yes {
+        do_update()?;
+        println!("update: cmux-axi upgraded {VERSION} -> {latest}");
+        return Ok(());
+    }
+
+    if !std::io::stdin().is_terminal() {
+        println!("update available: {latest} — run `cmux-axi update`, or `cmux-axi version --yes` to update now");
+        return Ok(());
+    }
+    print!("update available: {latest} — run cmux-axi update, or --yes to update now [y/N] ");
+    use std::io::Write;
+    std::io::stdout().flush().ok();
+    let mut line = String::new();
+    let _ = std::io::stdin().read_line(&mut line);
+    if matches!(line.trim(), "y" | "Y" | "yes" | "YES") {
+        do_update()?;
+        println!("update: cmux-axi upgraded {VERSION} -> {latest}");
+    }
+    // n / anything else / empty: exit 0, no change.
+    Ok(())
+}
+
+/// The `cargo install --git <REPO> --force` update, shared by `cmux-axi update` and
+/// `cmux-axi version --yes`.
+fn do_update() -> Result<()> {
+    let status = Command::new("cargo")
+        .args(["install", "--git", REPO, "--force"])
+        .status()
+        .map_err(|e| CmuxError::operational(format!("`cargo` not available: {e}"), "UPDATE"))?;
+    if !status.success() {
+        return Err(CmuxError::operational("cargo install failed", "UPDATE").with_suggestions(vec![
+            format!("Run `cargo install --git {REPO} --force` manually."),
+        ]));
+    }
+    Ok(())
 }
 
 /// Compare dotted version strings element-wise ("0.2.0" vs "0.10.1").
@@ -122,17 +168,7 @@ pub fn cmd_update(check: bool, json: bool) -> Result<()> {
         return Ok(());
     }
 
-    let status = Command::new("cargo")
-        .args(["install", "--git", REPO, "--force"])
-        .status()
-        .map_err(|e| CmuxError::operational(format!("`cargo` not available: {e}"), "UPDATE"))?;
-    if !status.success() {
-        return Err(
-            CmuxError::operational("cargo install failed", "UPDATE").with_suggestions(vec![
-                format!("Run `cargo install --git {REPO} --force` manually."),
-            ]),
-        );
-    }
+    do_update()?;
     if json {
         println!(
             "{}",

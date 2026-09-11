@@ -228,8 +228,7 @@ fn dispatch(args: &[String]) -> Result<()> {
             ops::teardown(project, parsed.flag("force"), state_dir.as_deref(), json)
         }
         "version" => {
-            version::cmd_version();
-            Ok(())
+            version::cmd_version(parsed.flag("yes"))
         }
         "update" => version::cmd_update(parsed.flag("check"), json),
         "setup" => {
