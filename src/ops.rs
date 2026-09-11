@@ -43,7 +43,8 @@ fn absolute(path: &Path) -> Result<PathBuf> {
     }
 }
 
-/// Resolve the state root: explicit `--state-dir`, else `<cwd>/.omp/state`.
+/// Resolve the state root: explicit `--state-dir`, else the registry home
+/// `<home>/.omp/state` (see `registry_home`).
 /// The tab title for a role: `Coordinator`, `Planner`, `Brainstorm`, `Developer 3`
 /// (plus ` · <specialty>` for a disposable developer).
 pub fn title_for(role: &str, specialty: Option<&str>) -> String {
@@ -80,6 +81,29 @@ fn title_surface(workspace: &str, surface: &str, title: &str) {
     }
 }
 
+/// The canonical registry home: `$HOME` (`HOME`/`USERPROFILE` unavailable → error).
+/// The crew's single source of truth lives under `<home>/.omp/state`, NOT the launch cwd,
+/// so `dev add`/`dev rm`/`status` run from inside a project checkout still address the
+/// same fleet instead of minting a project-local copy (#299).
+fn registry_home() -> Result<PathBuf> {
+    if let Ok(h) = std::env::var("HOME") {
+        if !h.is_empty() {
+            return Ok(PathBuf::from(h));
+        }
+    }
+    if cfg!(windows) {
+        if let Ok(p) = std::env::var("USERPROFILE") {
+            if !p.is_empty() {
+                return Ok(PathBuf::from(p));
+            }
+        }
+    }
+    Err(CmuxError::operational(
+        "cannot resolve $HOME (set HOME to the Chief-of-Staff home)",
+        "STATE",
+    ))
+}
+
 /// `<home>/.omp/state` → `<home>`; anything else → the launch cwd.
 fn cof_home_of(state: &Path, cwd: &Path) -> PathBuf {
     match (state.file_name(), state.parent().and_then(|p| p.file_name()), state.parent().and_then(|p| p.parent())) {
@@ -88,10 +112,57 @@ fn cof_home_of(state: &Path, cwd: &Path) -> PathBuf {
     }
 }
 
-fn state_root(cwd: &Path, explicit: Option<&Path>) -> Result<PathBuf> {
+/// Resolve the state root: explicit `--state-dir` (relative → resolved against the
+/// process cwd), else the canonical `<home>/.omp/state`. The implicit case is the
+/// registry home (#299), never the launch cwd's `.omp/state` — a fleet must be one,
+/// shared record regardless of which project checkout an op is invoked from.
+fn state_root(explicit: Option<&Path>) -> Result<PathBuf> {
     match explicit {
         Some(p) => absolute(p),
-        None => Ok(absolute(cwd)?.join(".omp").join("state")),
+        None => Ok(registry_home()?.join(".omp").join("state")),
+    }
+}
+
+#[cfg(test)]
+mod state_root_tests {
+    use super::*;
+
+    fn current_home() -> PathBuf {
+        std::env::var("HOME")
+            .map(PathBuf::from)
+            .expect("HOME must be set in the test environment")
+    }
+
+    #[test]
+    fn implicit_resolves_to_registry_home_not_cwd() {
+        // The headline #299 fix: no `--state-dir`, running from ANY cwd resolves to the
+        // shared home registry, never `<cwd>/.omp/state`.
+        let got = state_root(None).unwrap();
+        let want = current_home().join(".omp").join("state");
+        assert_eq!(got, want, "implicit state-dir must be $HOME/.omp/state");
+        // And it must NOT be the process cwd (the desync vector): even when cwd differs
+        // from $HOME, the result is still $HOME/.omp/state.
+        assert_ne!(
+            got,
+            PathBuf::from(".").join(".omp").join("state"),
+            "state-dir must not resolve against the cwd"
+        );
+    }
+
+    #[test]
+    fn explicit_absolute_state_dir_passes_through() {
+        let p = Path::new("/abs/custom/state");
+        assert_eq!(state_root(Some(p)).unwrap(), p);
+    }
+
+    #[test]
+    fn explicit_relative_state_dir_resolves_against_cwd() {
+        // `--state-dir rel/path` still resolves relative to the launch cwd (the historical
+        // `absolute` behavior) — an explicit override keeps its cwd semantics.
+        let rel = Path::new("rel/.omp/state");
+        let got = state_root(Some(rel)).unwrap();
+        let want = std::env::current_dir().unwrap().join(rel);
+        assert_eq!(got, want);
     }
 }
 
@@ -106,7 +177,7 @@ pub fn provision(project: &str, req: &crew::Request, state_dir: Option<&Path>, j
     let template = templates::resolve(req.layout.as_deref().unwrap_or(templates::DEFAULT))?;
     let harness = req.harness.as_deref().unwrap_or("omp");
     let cwd_abs = absolute(Path::new(req.cwd.as_deref().unwrap_or(".")))?;
-    let state = state_root(&cwd_abs, state_dir)?;
+    let state = state_root(state_dir)?;
     std::fs::create_dir_all(&state).map_err(|e| {
         CmuxError::operational(format!("cannot create {}: {e}", state.display()), "STATE")
     })?;
@@ -283,8 +354,7 @@ fn session_id(state_str: &str, role: &str, harness: &str) -> String {
 
 pub fn status(project: Option<&str>, state_dir: Option<&Path>, json: bool) -> Result<()> {
     cmux::ensure_installed()?;
-    let cwd = std::env::current_dir().map_err(|e| CmuxError::operational(e.to_string(), "CWD"))?;
-    let state = state_root(&cwd, state_dir)?;
+    let state = state_root(state_dir)?;
     let mut rows = fleet::load(&state.join("fleet.md"))?;
 
     // Liveness: a surface that cmux can no longer read is dead; one that came back is active.
@@ -391,8 +461,7 @@ pub fn status(project: Option<&str>, state_dir: Option<&Path>, json: bool) -> Re
 // ---------------------------------------------------------------------------
 
 fn resolve_surface(project: &str, role: &str, state_dir: Option<&Path>) -> Result<String> {
-    let cwd = std::env::current_dir().map_err(|e| CmuxError::operational(e.to_string(), "CWD"))?;
-    let state = state_root(&cwd, state_dir)?;
+    let state = state_root(state_dir)?;
     let rows = fleet::load(&state.join("fleet.md"))?;
     // `cof` is the Chief of Staff: one row for the whole home (recorded by its session start),
     // reachable from any project's crew.
@@ -480,7 +549,7 @@ pub fn dev_add(
 ) -> Result<()> {
     cmux::ensure_installed()?;
     let cwd_abs = absolute(cwd)?;
-    let state = state_root(&cwd_abs, state_dir)?;
+    let state = state_root(state_dir)?;
     let title = ws_title(project);
     let ws = cmux::find_workspace_by_title(&title)?;
 
@@ -640,8 +709,7 @@ pub fn dev_rm(
     state_dir: Option<&Path>,
     json: bool,
 ) -> Result<()> {
-    let cwd = std::env::current_dir().map_err(|e| CmuxError::operational(e.to_string(), "CWD"))?;
-    let state = state_root(&cwd, state_dir)?;
+    let state = state_root(state_dir)?;
     let mut all = fleet::load(&state.join("fleet.md"))?;
     let entry = fleet::find(&all, project, dev_id).cloned().ok_or_else(|| {
         CmuxError::operational(
@@ -703,8 +771,7 @@ pub fn teardown(project: &str, force: bool, state_dir: Option<&Path>, json: bool
     let _ = force;
     cmux::run(&["close-workspace", "--workspace", &ws.r#ref])?;
 
-    let cwd = std::env::current_dir().map_err(|e| CmuxError::operational(e.to_string(), "CWD"))?;
-    let state = state_root(&cwd, state_dir)?;
+    let state = state_root(state_dir)?;
     let mut all = fleet::load(&state.join("fleet.md"))?;
     all.retain(|e| e.project != project);
     fleet::write(&state.join("fleet.md"), &all)?;
