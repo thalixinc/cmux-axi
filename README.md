@@ -459,6 +459,12 @@ Both are opt-in and idempotent. The alternative (an MCP server) is deliberately 
 
 ---
 
+## Working agreement (for the crew)
+
+How this repo is built and reviewed lives in two files: [`intent/README.md`](intent/README.md) (the artifact chain and the five `cf sdlc` verbs) and [`REVIEW.md`](REVIEW.md) (the review policy). Verify commands are in [`CLAUDE.md`](CLAUDE.md), "Verifying your work".
+
+---
+
 ## License
 
 MIT
