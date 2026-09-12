@@ -91,7 +91,7 @@ fn help() -> String {
          \x20 {BIN} dev rm myproj dev-1\n\
          \x20 {BIN} teardown myproj\n\
          \x20 {BIN} setup skill [--project] | setup hooks [--project]\n\
-         \x20 {BIN} version | update [--check]"
+         \x20 {BIN} version [--yes] | update [--check]"
     )
 }
 

@@ -324,7 +324,10 @@ Print the version.
 
 ```
 cmux-axi version        # cmux-axi 0.2.0
+cmux-axi version --yes  # auto-update when a newer release is available
 ```
+
+`version --yes` auto-updates when a newer release is available; without it, the update prompt is interactive on a tty and reported (never blocking) otherwise.
 
 ### `update`
 
