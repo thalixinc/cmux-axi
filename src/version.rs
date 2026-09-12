@@ -19,7 +19,18 @@ pub fn cmd_version(yes: bool) -> Result<()> {
 
     // The update-available surface (mirrors cf #368): a newer release → "update available";
     // `--yes` auto-updates; otherwise an interactive [y/N] (non-tty = reported, never blocks).
-    let latest = fetch_latest_version()?;
+    // An offline/network fetch failure is not fatal: the version line is already printed.
+    version_update_surface(yes, fetch_latest_version())
+}
+
+/// The update-available logic once the version line is printed and the latest
+/// version is resolved. Split out so the comparison guard and the non-fatal
+/// offline behaviour are unit-testable without hitting the network.
+fn version_update_surface(yes: bool, fetched: Result<String>) -> Result<()> {
+    let latest = match fetched {
+        Ok(v) => v,
+        Err(_) => return Ok(()), // offline: just the version line, exit 0.
+    };
     if semver_cmp(&latest, VERSION) != Ordering::Greater {
         return Ok(()); // on latest: just the version line, no prompt.
     }
@@ -181,4 +192,24 @@ pub fn cmd_update(check: bool, json: bool) -> Result<()> {
         println!("update: cmux-axi upgraded {VERSION} -> {latest}");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn offline_fetch_is_not_fatal() {
+        // A network/curl failure must not propagate out of `version`: the version
+        // line is already printed, so the command degrades to exit 0.
+        let err = CmuxError::operational("could not reach the version source", "UPDATE_CHECK");
+        assert!(version_update_surface(false, Err(err)).is_ok());
+    }
+
+    #[test]
+    fn no_update_surface_when_not_greater() {
+        // latest == current, and latest older than current: just Ok(()), no prompt.
+        assert!(version_update_surface(false, Ok(VERSION.to_string())).is_ok());
+        assert!(version_update_surface(false, Ok("0.0.1".to_string())).is_ok());
+    }
 }
